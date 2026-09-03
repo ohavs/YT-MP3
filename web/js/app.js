@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '8';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '9';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -33,7 +33,7 @@
     info: null,
     job: null,
     mode: null,     // 'jobs' = live progress from a server you run; 'sync' = one-shot (serverless)
-    direct: null,   // bypasses a hosting proxy that would cap long requests
+    direct: '',     // set at boot: a hosting proxy caps dynamic requests, this bypasses it
     lastName: '',
     phase: 'idle', // idle | loading | ready | working | done | error
     lastFile: null,
@@ -82,29 +82,42 @@
   async function api(path, options = {}) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), options.timeout || 45000);
+
+    // The backend's own address goes first: a hosting proxy caps how long a
+    // dynamic request may run, and a lookup can legitimately exceed that cap —
+    // which the proxy reports as a gateway error, not as anything informative.
+    const bases = [state.direct, state.server].filter((v, i, a) => v && a.indexOf(v) === i);
+    let lastError = null;
+
     try {
-      // Prefer the backend's own address: a hosting proxy caps how long a
-      // dynamic request may take, and metadata lookups can run close to it.
-      const res = await fetch((state.direct || state.server) + path, {
-        ...options,
-        signal: ctrl.signal,
-        headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      for (const base of bases) {
+        let res;
+        try {
+          res = await fetch(base + path, {
+            ...options,
+            signal: ctrl.signal,
+            headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
+          });
+        } catch (err) {
+          if (err.name === 'AbortError') throw new Error('השרת לא הגיב בזמן');
+          lastError = new Error('אין חיבור לשרת ההמרה. נסו שוב בעוד רגע');
+          continue;   // this route is unreachable; the other one may not be
+        }
+
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) return data;
+
         const detail = data.detail;
         if (detail && typeof detail === 'object') {
           const err = new Error(detail.message || `שגיאת שרת (${res.status})`);
           err.reason = detail.reason || '';
-          throw err;
+          throw err;                     // the backend answered; that answer stands
         }
-        throw new Error(detail || `שגיאת שרת (${res.status})`);
+        lastError = new Error(detail || `שגיאת שרת (${res.status})`);
+        // 502/504/404 mean the route failed us, not the request — try the other
+        if (![502, 503, 504, 404].includes(res.status)) throw lastError;
       }
-      return data;
-    } catch (err) {
-      if (err.name === 'AbortError') throw new Error('השרת לא הגיב בזמן');
-      if (err instanceof TypeError) throw new Error('אין חיבור לשרת ההמרה. נסו שוב בעוד רגע');
-      throw err;
+      throw lastError || new Error('אין חיבור לשרת ההמרה');
     } finally {
       clearTimeout(timer);
     }
@@ -123,7 +136,7 @@
         if (!data.ok) continue;
         state.server = candidate;
         state.mode = data.mode === 'sync' ? 'sync' : 'jobs';
-        state.direct = data.direct_url ? trimApi(data.direct_url) : null;
+        if (data.direct_url) state.direct = trimApi(data.direct_url);
         return true;
       } catch {
         // a wrong address answers fast (404); only a waking instance is slow
@@ -523,7 +536,6 @@
       c.setAttribute('aria-checked', String(on));
     }
     el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
-    if (el.build) el.build.textContent = ltr(`build ${BUILD}`);
     buzz();
   });
 
@@ -550,13 +562,14 @@
       c.setAttribute('aria-checked', String(on));
     }
     el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
+    el.build.textContent = ltr(`build ${BUILD}`);
 
     // Where the backend lives. Nothing here is configurable: the deployed app
     // serves its API from the same origin, and localhost gets the dev port.
-    state.server = /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
-      ? `${location.protocol}//${location.hostname}:8000`
-      : location.origin;
+    const local = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+    state.server = local ? `${location.protocol}//${location.hostname}:8000` : location.origin;
 
+    if (!local) state.direct = FALLBACK_API;   // a dev machine talks to its own bridge
     render();
     loadHealth();   // also wakes a cold instance, before anything is asked of it
 
