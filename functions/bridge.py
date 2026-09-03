@@ -5,6 +5,7 @@ Firebase Cloud Function (``main.py``). Endpoints:
 
     GET  /api/health           -> liveness + which mode the client should use
     POST /api/info             -> metadata for a URL
+    GET  /api/diag             -> what each player client said, for a human
     GET  /api/download         -> convert and return the mp3 in one request
     POST /api/jobs             -> start a background job (progress mode)
     GET  /api/jobs/{id}        -> poll job status
@@ -14,11 +15,15 @@ Firebase Cloud Function (``main.py``). Endpoints:
 Serverless hosts throttle CPU between requests and spread traffic over
 instances, so they use the single-request ``/api/download`` path; a server you
 run yourself keeps the job endpoints and their live progress.
+
+This is a plain WSGI application on purpose. An ASGI framework behind a
+WSGI adapter runs its event loop on a side thread, which does not survive the
+threaded gunicorn worker the Functions runtime uses: every request hung
+forever, with nothing logged. Matching the runtime beats adapting to it.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -34,16 +39,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from flask import Flask, Response, jsonify, request, send_file
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 # --- configuration ----------------------------------------------------------
 
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
 JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", "1800"))
 MAX_DURATION_SECONDS = int(os.getenv("MAX_DURATION_SECONDS", "0"))  # 0 = unlimited
 SYNC_ONLY = os.getenv("SYNC_ONLY", "").lower() in ("1", "true", "yes")
@@ -71,26 +73,33 @@ log = logging.getLogger("ytmp3")
 # It has to land well inside the client's patience and any proxy's own cap.
 INFO_DEADLINE = int(os.getenv("INFO_DEADLINE_SECONDS", "25"))
 
-app = FastAPI(title="YT-MP3 bridge", docs_url=None, redoc_url=None)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
-)
+app = Flask(__name__)
 
 
-@app.middleware("http")
-async def private_network_access(request, call_next):
-    """Let an HTTPS page reach this server when it runs on a private address.
+class ApiError(Exception):
+    """A failure with a status code and a message meant for the screen."""
 
-    Chrome's Private Network Access preflight needs this opt-in header, which
-    the stock CORS middleware does not send.
-    """
-    response = await call_next(request)
-    if request.headers.get("access-control-request-private-network"):
+    def __init__(self, status: int, message: str, reason: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.reason = reason
+
+
+@app.errorhandler(ApiError)
+def handle_api_error(exc: ApiError):
+    return jsonify({"detail": {"message": exc.message, "reason": exc.reason}}), exc.status
+
+
+@app.after_request
+def cors(response: Response) -> Response:
+    response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
+    # Chrome's Private Network Access preflight needs this opt-in to let an
+    # HTTPS page reach a server running on a private address.
+    if request.headers.get("Access-Control-Request-Private-Network"):
         response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
 
@@ -206,7 +215,7 @@ UNSAFE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 def check_url(url: str) -> str:
     url = (url or "").strip()
     if not URL_RE.match(url):
-        raise HTTPException(status_code=400, detail="נדרשת כתובת http/https תקינה")
+        raise ApiError(400, "נדרשת כתובת http/https תקינה")
     return url
 
 
@@ -346,20 +355,29 @@ def friendly_error(exc: Exception) -> str:
     return text[:300] or "ההורדה נכשלה"
 
 
-async def run_bounded(fn, *args, timeout: float):
-    """Run blocking work and give up waiting after `timeout`, without blocking.
+def run_bounded(fn, *args, timeout: float):
+    """Run blocking work and stop waiting after `timeout`.
 
-    asyncio.wait_for cannot help here: a thread running yt-dlp does not answer
-    cancellation, and wait_for waits for the cancellation it requested — so a
-    single stuck call would hold the request open no matter what budget was
-    set. asyncio.wait simply stops waiting; the orphaned thread is left to
-    finish on its own and dies with the instance.
+    A thread running yt-dlp cannot be cancelled, so the wait is simply
+    abandoned: the daemon thread finishes on its own and dies with the
+    process, while the caller gets an answer on time.
     """
-    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
-    done, _ = await asyncio.wait({task}, timeout=timeout)
-    if not done:
-        raise asyncio.TimeoutError
-    return task.result()
+    box: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            box["value"] = fn(*args)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread
+            box["error"] = exc
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 def first_reason(report: list[dict[str, Any]]) -> str | None:
@@ -386,7 +404,7 @@ def single_entry(data: dict[str, Any]) -> dict[str, Any]:
     if data.get("_type") == "playlist":
         entries = [e for e in (data.get("entries") or []) if e]
         if not entries:
-            raise HTTPException(status_code=422, detail="לא נמצאו סרטונים בקישור")
+            raise ApiError(422, "לא נמצאו סרטונים בקישור")
         return entries[0]
     return data
 
@@ -461,137 +479,117 @@ def convert(job: Job, out_dir: Path) -> Path:
     return target
 
 
-# --- API models -------------------------------------------------------------
-
-
-class InfoRequest(BaseModel):
-    url: str
-
-
-class JobRequest(BaseModel):
-    url: str
-    bitrate: str = Field(default="192")
-
-
 # --- routes -----------------------------------------------------------------
 
 
 @app.get("/api/health")
-def health() -> dict[str, Any]:
-    return {
-        "ok": True,
-        "service": "yt-mp3-bridge",
-        "ffmpeg": bool(ffmpeg_exe()),
-        "mode": "sync" if SYNC_ONLY else "jobs",
-        "cookies": bool(cookie_file()),
-        "clients": PLAYER_CLIENTS,
-        "direct_url": PUBLIC_API_URL or None,
-        "bitrates": sorted(ALLOWED_BITRATES, key=int),
-    }
+def health():
+    return jsonify(
+        {
+            "ok": True,
+            "service": "yt-mp3-bridge",
+            "ffmpeg": bool(ffmpeg_exe()),
+            "mode": "sync" if SYNC_ONLY else "jobs",
+            "cookies": bool(cookie_file()),
+            "clients": PLAYER_CLIENTS,
+            "direct_url": PUBLIC_API_URL or None,
+            "bitrates": sorted(ALLOWED_BITRATES, key=int),
+        }
+    )
 
 
 @app.post("/api/info")
-async def info(req: InfoRequest) -> dict[str, Any]:
-    url = check_url(req.url)
-
+def info():
+    payload = request.get_json(silent=True) or {}
+    url = check_url(payload.get("url", ""))
     report: list[dict[str, Any]] = []
+
     try:
         data = single_entry(
-            await run_bounded(
-                extract_info, url, base_opts(), False, INFO_DEADLINE, report,
-                timeout=INFO_DEADLINE + 5,
-            )
+            run_bounded(extract_info, url, base_opts(), False, INFO_DEADLINE, report,
+                        timeout=INFO_DEADLINE + 5)
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         log.error("info timed out for %s", url)
-        raise HTTPException(
-            status_code=504,
-            detail={
-                "message": "יוטיוב לא ענה בזמן",
-                "reason": first_reason(report),
-            },
-        ) from exc
-    except DownloadError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"message": friendly_error(exc), "reason": first_reason(report) or str(exc)[:200]},
-        ) from exc
-    except HTTPException:
+        raise ApiError(504, "יוטיוב לא ענה בזמן", first_reason(report)) from exc
+    except ApiError:
         raise
+    except DownloadError as exc:
+        raise ApiError(422, friendly_error(exc), first_reason(report) or str(exc)[:200]) from exc
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as a message
-        raise HTTPException(
-            status_code=500,
-            detail={"message": friendly_error(exc), "reason": first_reason(report) or str(exc)[:200]},
-        ) from exc
+        raise ApiError(500, friendly_error(exc), first_reason(report) or str(exc)[:200]) from exc
 
     duration = int(data.get("duration") or 0)
     if MAX_DURATION_SECONDS and duration > MAX_DURATION_SECONDS:
-        raise HTTPException(
-            status_code=413,
-            detail=f"הסרטון ארוך מהמותר ({MAX_DURATION_SECONDS // 60} דקות)",
-        )
+        raise ApiError(413, f"הסרטון ארוך מהמותר ({MAX_DURATION_SECONDS // 60} דקות)")
 
-    return {
-        "id": data.get("id"),
-        "title": data.get("title") or "ללא שם",
-        "uploader": data.get("uploader") or data.get("channel"),
-        "duration": duration or None,
-        "thumbnail": pick_thumbnail(data),
-        "webpage_url": data.get("webpage_url") or url,
-        "is_live": bool(data.get("is_live")),
-    }
+    return jsonify(
+        {
+            "id": data.get("id"),
+            "title": data.get("title") or "ללא שם",
+            "uploader": data.get("uploader") or data.get("channel"),
+            "duration": duration or None,
+            "thumbnail": pick_thumbnail(data),
+            "webpage_url": data.get("webpage_url") or url,
+            "is_live": bool(data.get("is_live")),
+        }
+    )
 
 
 @app.get("/api/diag")
-async def diag(url: str = Query(...)) -> dict[str, Any]:
+def diag():
     """Report what each player client actually said. Read by a human, not the app."""
-    target = check_url(url)
+    target = check_url(request.args.get("url", ""))
     report: list[dict[str, Any]] = []
     started = time.monotonic()
     title = None
     try:
-        data = await run_bounded(
-            extract_info, target, base_opts(), False, INFO_DEADLINE, report,
-            timeout=INFO_DEADLINE + 5,
-        )
+        data = run_bounded(extract_info, target, base_opts(), False, INFO_DEADLINE, report,
+                           timeout=INFO_DEADLINE + 5)
         title = single_entry(data).get("title")
     except Exception as exc:  # noqa: BLE001 - the failure is the point of this endpoint
         log.warning("diag failed: %s", exc)
 
-    return {
-        "url": target,
-        "title": title,
-        "succeeded": title is not None,
-        "total_seconds": round(time.monotonic() - started, 1),
-        "attempts": report,
-        "ffmpeg": bool(ffmpeg_exe()),
-        "cookies": bool(cookie_file()),
-        "yt_dlp": __import__("yt_dlp").version.__version__,
-    }
+    return jsonify(
+        {
+            "url": target,
+            "title": title,
+            "succeeded": title is not None,
+            "total_seconds": round(time.monotonic() - started, 1),
+            "attempts": report,
+            "ffmpeg": bool(ffmpeg_exe()),
+            "cookies": bool(cookie_file()),
+            "yt_dlp": __import__("yt_dlp").version.__version__,
+        }
+    )
 
 
 @app.get("/api/download")
-async def download(
-    url: str = Query(...),
-    bitrate: str = Query("192"),
-) -> FileResponse:
+def download():
     """Convert and hand back the mp3 within a single request."""
     sweep_jobs()
-    job = Job(id=uuid.uuid4().hex[:12], url=check_url(url), bitrate=check_bitrate(bitrate))
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        url=check_url(request.args.get("url", "")),
+        bitrate=check_bitrate(request.args.get("bitrate", "192")),
+    )
     out_dir = WORK_DIR / job.id
 
     try:
-        target = await asyncio.to_thread(convert, job, out_dir)
+        target = convert(job, out_dir)
+    except ApiError:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
     except DownloadError as exc:
         shutil.rmtree(out_dir, ignore_errors=True)
-        raise HTTPException(status_code=422, detail=friendly_error(exc)) from exc
+        raise ApiError(422, friendly_error(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as a message
         shutil.rmtree(out_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=friendly_error(exc)) from exc
+        raise ApiError(500, friendly_error(exc)) from exc
 
     with JOBS_LOCK:
         JOBS[job.id] = job  # keeps the sweeper responsible for the file
-    return FileResponse(target, media_type="audio/mpeg", filename=target.name)
+    return send_file(target, mimetype="audio/mpeg", as_attachment=True, download_name=target.name)
 
 
 def run_job(job: Job) -> None:
@@ -603,37 +601,38 @@ def run_job(job: Job) -> None:
 
 
 @app.post("/api/jobs")
-async def create_job(req: JobRequest) -> dict[str, str]:
+def create_job():
     sweep_jobs()
-    url = check_url(req.url)
+    payload = request.get_json(silent=True) or {}
+    url = check_url(payload.get("url", ""))
 
     if not ffmpeg_exe():
-        raise HTTPException(status_code=503, detail="ffmpeg לא מותקן בשרת")
+        raise ApiError(503, "ffmpeg לא מותקן בשרת")
 
-    job = Job(id=uuid.uuid4().hex[:12], url=url, bitrate=check_bitrate(req.bitrate))
+    job = Job(id=uuid.uuid4().hex[:12], url=url, bitrate=check_bitrate(payload.get("bitrate", "192")))
     with JOBS_LOCK:
         JOBS[job.id] = job
     threading.Thread(target=run_job, args=(job,), daemon=True).start()
-    return {"id": job.id}
+    return jsonify({"id": job.id})
 
 
 def get_job(job_id: str) -> Job:
     job = JOBS.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="העבודה לא נמצאה או שפג תוקפה")
+        raise ApiError(404, "העבודה לא נמצאה או שפג תוקפה")
     return job
 
 
-@app.get("/api/jobs/{job_id}")
-def job_status(job_id: str) -> dict[str, Any]:
-    return get_job(job_id).public()
+@app.get("/api/jobs/<job_id>")
+def job_status(job_id: str):
+    return jsonify(get_job(job_id).public())
 
 
-@app.get("/api/jobs/{job_id}/events")
-async def job_events(job_id: str) -> StreamingResponse:
+@app.get("/api/jobs/<job_id>/events")
+def job_events(job_id: str):
     job = get_job(job_id)
 
-    async def stream():
+    def stream():
         last = None
         while True:
             payload = job.public()
@@ -642,21 +641,21 @@ async def job_events(job_id: str) -> StreamingResponse:
                 last = payload
             if job.status in ("done", "error"):
                 break
-            await asyncio.sleep(0.4)
+            time.sleep(0.4)
 
-    return StreamingResponse(
+    return Response(
         stream(),
-        media_type="text/event-stream",
+        mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-@app.get("/api/jobs/{job_id}/file")
-def job_file(job_id: str) -> FileResponse:
+@app.get("/api/jobs/<job_id>/file")
+def job_file(job_id: str):
     job = get_job(job_id)
     if job.status != "done" or not job.filename:
-        raise HTTPException(status_code=409, detail="הקובץ עדיין לא מוכן")
+        raise ApiError(409, "הקובץ עדיין לא מוכן")
     path = WORK_DIR / job.id / job.filename
     if not path.is_file():
-        raise HTTPException(status_code=410, detail="הקובץ נמחק מהשרת")
-    return FileResponse(path, media_type="audio/mpeg", filename=job.filename)
+        raise ApiError(410, "הקובץ נמחק מהשרת")
+    return send_file(path, mimetype="audio/mpeg", as_attachment=True, download_name=job.filename)

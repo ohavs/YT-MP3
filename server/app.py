@@ -10,14 +10,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "functions"))
 
-from bridge import app  # noqa: E402,F401 - re-exported for `uvicorn app:app`
+from bridge import app  # noqa: E402,F401 - re-exported for any WSGI server
 
 if __name__ == "__main__":
-    import uvicorn
+    from werkzeug.serving import run_simple
 
-    uvicorn.run(
+    run_simple(
+        os.getenv("HOST", "0.0.0.0"),
+        int(os.getenv("PORT", "8000")),
         app,
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8000")),
-        log_level="info",
+        threaded=True,
     )

@@ -1,23 +1,23 @@
 """Firebase entry point: serves the yt-dlp bridge as one HTTPS function.
 
-Cloud Functions hands us a WSGI request, so the ASGI app is adapted rather
-than rewritten. The function answers the same /api/* routes the front-end
-already speaks; SYNC_ONLY steers the client to the single-request path,
-because a serverless instance cannot be relied on to keep job state.
+The bridge is a WSGI application, which is what this runtime speaks, so the
+request is handed straight to it. The function answers the same /api/* routes
+the front-end already speaks; SYNC_ONLY steers the client to the
+single-request path, because a serverless instance cannot be relied on to
+keep job state.
 """
 
 import os
 
-from a2wsgi import ASGIMiddleware
 from firebase_functions import https_fn, options, scheduler_fn
 from werkzeug.wrappers import Response
 
 os.environ.setdefault("SYNC_ONLY", "1")
 os.environ.setdefault("WORK_DIR", "/tmp")
 
-from bridge import app as asgi_app  # noqa: E402 - env must be set before import
+from bridge import app as flask_app  # noqa: E402 - env must be set before import
 
-wsgi_app = ASGIMiddleware(asgi_app)
+wsgi_app = flask_app.wsgi_app
 
 
 def normalize(environ: dict) -> dict:

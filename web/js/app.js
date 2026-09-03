@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '10';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '11';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
