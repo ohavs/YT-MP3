@@ -294,8 +294,10 @@
   async function syncDownload(url) {
     // One request does the whole job, so there is no progress to poll until
     // the server starts sending the finished file.
-    const base = state.direct || state.server;
-    const endpoint = `${base}/api/download?url=${encodeURIComponent(url)}&bitrate=${state.bitrate}`;
+    const query = `url=${encodeURIComponent(url)}&bitrate=${state.bitrate}`;
+    // The direct endpoint avoids a hosting proxy's request cap; same origin is
+    // the fallback if it cannot be reached.
+    const bases = [state.direct, state.server].filter((v, i, a) => v && a.indexOf(v) === i);
 
     el.pgLabel.textContent = 'מוריד וממיר';
     el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)} · זה יכול לקחת עד דקה`;
@@ -304,11 +306,22 @@
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 900000);
     try {
-      const res = await fetch(endpoint, { signal: ctrl.signal });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || `שגיאת שרת (${res.status})`);
+      let res = null;
+      let lastError = null;
+      for (const base of bases) {
+        try {
+          const attempt = await fetch(`${base}/api/download?${query}`, { signal: ctrl.signal });
+          if (attempt.ok) { res = attempt; break; }
+          const data = await attempt.json().catch(() => ({}));
+          lastError = new Error(data.detail || `שגיאת שרת (${attempt.status})`);
+          // 4xx other than "not found" is the server's verdict, not a routing fault
+          if (attempt.status < 500 && attempt.status !== 404) break;
+        } catch (err) {
+          if (err.name === 'AbortError') throw err;
+          lastError = new Error('אין חיבור לשרת ההמרה');
+        }
       }
+      if (!res) throw lastError || new Error('ההמרה נכשלה');
 
       const name = filenameFrom(res.headers.get('Content-Disposition'), 'audio.mp3');
       const total = Number(res.headers.get('Content-Length')) || 0;

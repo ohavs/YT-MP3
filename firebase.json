@@ -1,19 +1,45 @@
 {
   "hosting": {
     "public": "web",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "function": "api",
+        "region": "us-central1"
+      }
+    ],
     "headers": [
       {
         "source": "/sw.js",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
       },
       {
         "source": "/manifest.webmanifest",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
       },
       {
         "source": "**/*.@(css|js|png|svg)",
-        "headers": [{ "key": "Cache-Control", "value": "public, max-age=604800" }]
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=604800"
+          }
+        ]
       }
     ]
   },
@@ -22,7 +48,12 @@
       "source": "functions",
       "codebase": "default",
       "runtime": "python312",
-      "ignore": ["venv", ".git", "__pycache__", "*.pyc"]
+      "ignore": [
+        "venv",
+        ".git",
+        "__pycache__",
+        "*.pyc"
+      ]
     }
   ]
 }

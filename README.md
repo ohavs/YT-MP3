@@ -32,23 +32,25 @@ Dockerfile  ← אותו דבר בקונטיינר (בונים מתיקיית ה
 
 ## פריסה ל‑Firebase
 
-הפרויקט מחובר ל‑`yt-mp3-57bee`. ה‑PWA כבר פרוס.
+הפרויקט `yt-mp3-57bee` פרוס ועובד: ה‑PWA ב‑Hosting, ושרת ההמרה כ‑Cloud Function דור 2
+(`api`, us‑central1, python312, 1GB, 540 שניות).
 
 ```bash
-npx firebase deploy --only hosting     # הממשק
-npx firebase deploy --only functions   # שרת ההמרה (דורש Blaze)
+npx firebase deploy                     # הכל
+npx firebase deploy --only hosting      # רק הממשק
+npx firebase deploy --only functions    # רק שרת ההמרה
 ```
 
-> **הפונקציה דורשת מסלול Blaze.** Cloud Functions לא נפתחות בתוכנית החינמית (Spark).
-> אחרי שדרוג ב‑https://console.firebase.google.com/project/yt-mp3-57bee/usage/details
-> מריצים `firebase deploy --only functions` ומוסיפים ל‑`firebase.json` את הניתוב:
-> ```json
-> "rewrites": [{ "source": "/api/**", "function": "api", "region": "us-central1" }]
-> ```
-> ואז `firebase deploy --only hosting`. מאותו רגע האפליקציה מזהה את השרת לבד — אין מה להגדיר.
+`firebase.json` מנתב `/api/**` לפונקציה, כך שהאפליקציה מוצאת את השרת לבד — אין מה להגדיר בממשק.
+בנוסף `functions/.env` מחזיק את `PUBLIC_API_URL` (כתובת ה‑Run של הפונקציה), ואליה פונות בקשות
+ההמרה הארוכות ישירות, כדי לא להיתקל בתקרת הזמן של Hosting לבקשות דינמיות. אם הכתובת הישירה
+לא נגישה, האפליקציה חוזרת אוטומטית לניתוב דרך אותו domain.
 
-הפונקציה מוגדרת ל‑1GB זיכרון ו‑540 שניות. `functions/.env` מחזיק את `PUBLIC_API_URL` —
-כתובת הפונקציה עצמה, שאליה האפליקציה פונה ישירות כדי לא להיתקל בתקרת הזמן של Hosting לבקשות דינמיות.
+לפני `deploy --only functions` בפעם הראשונה במחשב חדש:
+
+```bash
+cd functions && python3.12 -m venv venv && ./venv/bin/pip install -r requirements.txt
+```
 
 ## הרצה מקומית
 
