@@ -15,7 +15,7 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
-<link rel="stylesheet" href="./css/app.css?v=14">
+<link rel="stylesheet" href="./css/app.css?v=15">
 <script>
   // Applied before first paint: the deferred bundle would arrive a frame late,
   // and a flash of the wrong theme is the one bug a theme toggle must not have.
@@ -50,15 +50,17 @@
     <section class="card input-card">
       <label class="field" for="url">
         <span class="field-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+          <svg class="ic-search" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+          <svg class="ic-link" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
         </span>
         <input id="url" type="url" inputmode="url" dir="ltr" spellcheck="false"
                autocapitalize="off" autocorrect="off" enterkeyhint="go"
-               placeholder="https://youtu.be/…" aria-label="קישור לסרטון">
+               placeholder="חיפוש שיר או הדבקת קישור" aria-label="חיפוש או קישור">
         <button class="clear-btn" id="btn-clear" type="button" aria-label="ניקוי" hidden>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
         </button>
       </label>
+      <p class="field-hint" id="field-hint">הקלידו שם של שיר כדי לחפש, או הדביקו קישור מיוטיוב</p>
       <button class="btn btn-ghost btn-paste" id="btn-paste" type="button">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
         הדבקת קישור
@@ -100,6 +102,11 @@
       </label>
     </section>
 
+    <!-- נגן -->
+    <section class="card player-card" id="player-card" hidden>
+      <div class="player-frame"><div id="player"></div></div>
+    </section>
+
     <!-- חיתוך -->
     <section class="card" id="trim-card" hidden>
       <div class="card-head">
@@ -108,18 +115,33 @@
           <span class="switch-knob"></span>
         </button>
       </div>
+
       <div class="trim-body" id="trim-body" hidden>
-        <div class="trim-row">
-          <span class="trim-label">מ־</span>
-          <input id="trim-start" type="range" min="0" value="0" step="1" aria-label="נקודת התחלה">
-          <span class="trim-time" id="trim-start-time">0:00</span>
+        <div class="range" id="range">
+          <div class="range-track"></div>
+          <div class="range-fill" id="range-fill"></div>
+          <button class="range-handle" id="handle-start" type="button" aria-label="נקודת התחלה"
+                  role="slider" aria-valuemin="0" aria-valuenow="0"></button>
+          <button class="range-handle" id="handle-end" type="button" aria-label="נקודת סיום"
+                  role="slider" aria-valuemin="0" aria-valuenow="0"></button>
         </div>
-        <div class="trim-row">
-          <span class="trim-label">עד</span>
-          <input id="trim-end" type="range" min="0" value="0" step="1" aria-label="נקודת סיום">
-          <span class="trim-time" id="trim-end-time">0:00</span>
+
+        <div class="time-row">
+          <label class="time-box">
+            <span>מתחיל</span>
+            <input id="time-start" type="text" inputmode="numeric" value="0:00" aria-label="זמן התחלה">
+          </label>
+          <span class="time-len" id="trim-summary"></span>
+          <label class="time-box">
+            <span>מסתיים</span>
+            <input id="time-end" type="text" inputmode="numeric" value="0:00" aria-label="זמן סיום">
+          </label>
         </div>
-        <p class="muted small" id="trim-summary"></p>
+
+        <div class="mark-row" id="mark-row" hidden>
+          <button class="btn btn-ghost mark-btn" id="mark-start" type="button">קביעת התחלה מהנגן</button>
+          <button class="btn btn-ghost mark-btn" id="mark-end" type="button">קביעת סוף מהנגן</button>
+        </div>
       </div>
     </section>
 
@@ -213,6 +235,6 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="./js/app.js?v=14" defer></script>
+<script src="./js/app.js?v=15" defer></script>
 </body>
 </html>

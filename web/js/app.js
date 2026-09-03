@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '14';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '15';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -21,8 +21,12 @@
     resultsCard: $('results-card'), results: $('results'), resultsCount: $('results-count'),
     nameCard: $('name-card'), name: $('name'),
     trimCard: $('trim-card'), trimToggle: $('trim-toggle'), trimBody: $('trim-body'),
-    trimStart: $('trim-start'), trimEnd: $('trim-end'),
-    trimStartTime: $('trim-start-time'), trimEndTime: $('trim-end-time'), trimSummary: $('trim-summary'),
+    range: $('range'), rangeFill: $('range-fill'),
+    handleStart: $('handle-start'), handleEnd: $('handle-end'),
+    timeStart: $('time-start'), timeEnd: $('time-end'), trimSummary: $('trim-summary'),
+    markRow: $('mark-row'), markStart: $('mark-start'), markEnd: $('mark-end'),
+    playerCard: $('player-card'), fieldHint: $('field-hint'),
+    iconSearch: document.querySelector('.ic-search'), iconLink: document.querySelector('.ic-link'),
     queueSection: $('queue-section'), queueList: $('queue-list'),
     clearQueue: $('btn-clear-queue'), queueAdd: $('btn-queue'),
     spinner: $('btn-spinner'), loadingNote: $('loading-note'),
@@ -47,6 +51,8 @@
     results: [],       // search hits waiting to be picked
     searching: false,
     trimOn: false,
+    span: { from: 0, to: 0, total: 0 },   // the cut, in seconds
+    player: null,
     queue: [],         // items waiting their turn, plus the finished ones
     running: false,
     phase: 'idle', // idle | loading | ready | working | done | error
@@ -164,17 +170,17 @@
   /* ---------- what to convert ---------- */
 
   function currentSpec(url) {
-    const duration = state.info?.duration || 0;
-    const on = state.trimOn && duration > 0;
+    const { from, to, total } = state.span;
+    const on = state.trimOn && total > 0;
     return {
       url: url || firstUrl(el.url.value) || el.url.value.trim(),
       bitrate: state.bitrate,
       name: el.name.value.trim(),
-      start: on ? Number(el.trimStart.value) : 0,
-      end: on && Number(el.trimEnd.value) < duration ? Number(el.trimEnd.value) : null,
+      start: on ? from : 0,
+      end: on && to < total ? to : null,
       title: state.info?.title || '',
       thumbnail: state.info?.thumbnail || '',
-      duration: on ? Number(el.trimEnd.value) - Number(el.trimStart.value) : duration || null,
+      duration: on ? to - from : total || null,
     };
   }
 
@@ -229,6 +235,7 @@
     el.empty.hidden = !(p === 'idle' && !state.info && !readHistory().length
                         && !state.results.length && !state.queue.length);
     el.clear.hidden = !el.url.value;
+    reflectFieldMode();
 
     renderHistory();
     renderQueue();
@@ -257,6 +264,7 @@
     el.name.value = (info.title || 'audio').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 120);
     setupTrim(info.duration);
     clearResults();
+    showPlayer(info);
     el.title.textContent = info.title || '—';
     el.meta.textContent = [info.uploader, ltr(fmtTime(info.duration))].filter(Boolean).join(' · ');
     if (info.thumbnail) { el.thumb.src = info.thumbnail; el.thumb.hidden = false; }
@@ -365,26 +373,194 @@
 
   /* ---------- trim ---------- */
 
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+  /** Accepts "1:23", "1:02:03" or a plain number of seconds. */
+  function parseTime(text) {
+    const raw = String(text || '').trim();
+    if (!/\d/.test(raw)) return null;              // nothing numeric: not a time at all
+    const parts = raw.split(':').map((n) => {
+      const digits = n.replace(/\D/g, '');
+      return digits === '' ? NaN : Number(digits);
+    });
+    if (parts.some((n) => Number.isNaN(n))) return null;
+    if (parts.length === 1) return parts[0];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return null;
+  }
+
   function setupTrim(duration) {
-    const max = Math.max(1, Math.round(duration || 0));
-    for (const slider of [el.trimStart, el.trimEnd]) slider.max = String(max);
-    el.trimStart.value = '0';
-    el.trimEnd.value = String(max);
+    const total = Math.max(0, Math.round(duration || 0));
+    state.span = { from: 0, to: total, total };
     state.trimOn = false;
     el.trimToggle.setAttribute('aria-checked', 'false');
     el.trimBody.hidden = true;
     renderTrim();
   }
 
-  function renderTrim() {
-    const from = Number(el.trimStart.value);
-    const to = Number(el.trimEnd.value);
-    el.trimStartTime.textContent = fmtTime(from) || '0:00';
-    el.trimEndTime.textContent = fmtTime(to) || '0:00';
-    el.trimSummary.textContent = `אורך הקטע ${ltr(fmtTime(Math.max(0, to - from)) || '0:00')}`;
+  function setSpan(from, to, { silent = false } = {}) {
+    const { total } = state.span;
+    if (!total) return;
+    state.span.from = clamp(Math.round(from), 0, total - 1);
+    state.span.to = clamp(Math.round(to), state.span.from + 1, total);
+    renderTrim();
+    if (!silent && state.phase === 'done') { state.phase = 'ready'; render(); }
   }
 
-  /* ---------- queue ---------- */
+  function renderTrim() {
+    const { from, to, total } = state.span;
+    const pct = (v) => (total ? (v / total) * 100 : 0);
+
+    el.handleStart.style.left = `${pct(from)}%`;
+    el.handleEnd.style.left = `${pct(to)}%`;
+    el.rangeFill.style.left = `${pct(from)}%`;
+    el.rangeFill.style.width = `${pct(to - from)}%`;
+
+    for (const [node, value] of [[el.handleStart, from], [el.handleEnd, to]]) {
+      node.setAttribute('aria-valuemax', String(total));
+      node.setAttribute('aria-valuenow', String(value));
+      node.setAttribute('aria-valuetext', fmtTime(value) || '0:00');
+    }
+
+    if (document.activeElement !== el.timeStart) el.timeStart.value = fmtTime(from) || '0:00';
+    if (document.activeElement !== el.timeEnd) el.timeEnd.value = fmtTime(to) || '0:00';
+    el.trimSummary.textContent = ltr(fmtTime(Math.max(0, to - from)) || '0:00');
+  }
+
+  /** Drag either handle; the track keeps its own left-to-right axis. */
+  function dragHandle(handle, isStart) {
+    handle.addEventListener('pointerdown', (e) => {
+      if (!state.span.total) return;
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add('is-held');
+
+      const rect = el.range.getBoundingClientRect();
+      const move = (ev) => {
+        const ratio = clamp((ev.clientX - rect.left) / rect.width, 0, 1);
+        const seconds = ratio * state.span.total;
+        if (isStart) setSpan(seconds, state.span.to);
+        else setSpan(state.span.from, seconds);
+      };
+      const up = () => {
+        handle.classList.remove('is-held');
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
+        buzz();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+    });
+
+    handle.addEventListener('keydown', (e) => {
+      const step = e.shiftKey ? 5 : 1;
+      let delta = 0;
+      if (e.key === 'ArrowLeft') delta = -step;
+      else if (e.key === 'ArrowRight') delta = step;
+      else return;
+      e.preventDefault();
+      if (isStart) setSpan(state.span.from + delta, state.span.to);
+      else setSpan(state.span.from, state.span.to + delta);
+    });
+  }
+
+  dragHandle(el.handleStart, true);
+  dragHandle(el.handleEnd, false);
+
+  for (const [input, isStart] of [[el.timeStart, true], [el.timeEnd, false]]) {
+    const commit = () => {
+      const value = parseTime(input.value);
+      if (value === null) { renderTrim(); return; }
+      if (isStart) setSpan(value, state.span.to);
+      else setSpan(state.span.from, value);
+    };
+    input.addEventListener('change', commit);
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  }
+
+  /* ---------- player ---------- */
+
+  const YT_ID = /^[\w-]{11}$/;
+
+  /**
+   * Load YouTube's iframe API once, lazily.
+   * Playing the audio ourselves is not an option: the stream URLs yt-dlp
+   * resolves are tied to the address that asked for them, so they answer the
+   * server and refuse the phone. The official player has no such problem.
+   */
+  let apiReady = null;
+  function loadPlayerApi() {
+    if (apiReady) return apiReady;
+    apiReady = new Promise((resolve, reject) => {
+      if (window.YT?.Player) { resolve(window.YT); return; }
+      window.onYouTubeIframeAPIReady = () => resolve(window.YT);
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      tag.onerror = () => reject(new Error('player unavailable'));
+      document.head.appendChild(tag);
+      setTimeout(() => reject(new Error('player timed out')), 12000);
+    });
+    return apiReady;
+  }
+
+  async function showPlayer(info) {
+    const id = info?.id;
+    const isYouTube = YT_ID.test(id || '') && YT_RE.test(info.webpage_url || '');
+    if (!isYouTube) { hidePlayer(); return; }
+
+    try {
+      const YT = await loadPlayerApi();
+      if (state.info?.id !== id) return;            // a newer video took over
+
+      el.playerCard.hidden = false;
+      el.markRow.hidden = false;
+      if (state.player?.loadVideoById) {
+        state.player.loadVideoById(id);
+      } else {
+        state.player = new YT.Player('player', {
+          videoId: id,
+          playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+        });
+      }
+    } catch {
+      hidePlayer();                                  // the sliders still work
+    }
+  }
+
+  function hidePlayer() {
+    el.playerCard.hidden = true;
+    el.markRow.hidden = true;
+    try { state.player?.stopVideo?.(); } catch { /* the frame may be gone */ }
+  }
+
+  function playerTime() {
+    try {
+      const t = state.player?.getCurrentTime?.();
+      return Number.isFinite(t) ? Math.round(t) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  el.markStart.addEventListener('click', () => {
+    const t = playerTime();
+    if (t === null) { toast('הנגן עוד לא מוכן'); return; }
+    setSpan(t, Math.max(t + 1, state.span.to));
+    buzz();
+  });
+
+  el.markEnd.addEventListener('click', () => {
+    const t = playerTime();
+    if (t === null) { toast('הנגן עוד לא מוכן'); return; }
+    setSpan(Math.min(state.span.from, t - 1), t);
+    buzz();
+  });
+
+  /* ---------- queue ---------- */  /* ---------- queue ---------- */
 
   function renderQueue() {
     el.queueSection.hidden = state.queue.length === 0;
@@ -462,6 +638,7 @@
     state.info = null;
     state.phase = 'idle';
     clearResults();
+    hidePlayer();
     render();
     runQueue();
   }
@@ -813,8 +990,16 @@
 
   /* ---------- events ---------- */
 
+  function reflectFieldMode() {
+    // SVG elements are not HTMLElements, so setting .hidden on them does
+    // nothing; the state lives on the container as a class instead.
+    el.iconSearch.parentElement.classList.toggle('is-link', isUrl(el.url.value.trim()));
+    el.fieldHint.hidden = Boolean(el.url.value.trim());
+  }
+
   let typeTimer;
   el.url.addEventListener('input', () => {
+    reflectFieldMode();
     render();
     clearTimeout(typeTimer);
     const v = el.url.value.trim();
@@ -843,6 +1028,7 @@
     state.info = null;
     state.phase = 'idle';
     clearResults();
+    hidePlayer();
     stopStream();
     render();
     el.url.focus();
@@ -897,20 +1083,6 @@
     el.trimBody.hidden = !state.trimOn;
     buzz();
     if (state.phase === 'done') { state.phase = 'ready'; render(); }
-  });
-
-  // The two sliders share one range and must not cross each other.
-  el.trimStart.addEventListener('input', () => {
-    if (Number(el.trimStart.value) >= Number(el.trimEnd.value)) {
-      el.trimStart.value = String(Math.max(0, Number(el.trimEnd.value) - 1));
-    }
-    renderTrim();
-  });
-  el.trimEnd.addEventListener('input', () => {
-    if (Number(el.trimEnd.value) <= Number(el.trimStart.value)) {
-      el.trimEnd.value = String(Number(el.trimStart.value) + 1);
-    }
-    renderTrim();
   });
 
   el.name.addEventListener('input', () => {
