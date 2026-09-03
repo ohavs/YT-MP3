@@ -262,6 +262,32 @@ def cookie_file() -> str | None:
     return str(target)
 
 
+class YdlLogger:
+    """Routes yt-dlp's output through logging instead of the process streams.
+
+    Left alone, yt-dlp writes messages with a helper that encodes to bytes and
+    hands them to ``sys.stderr.buffer``. This runtime replaces stderr with a
+    wrapper whose ``.buffer`` is itself a text stream, so that write raises
+    "string argument expected, got 'bytes'" — an error with nothing to do with
+    the video, raised while merely reporting on it.
+    """
+
+    def debug(self, msg: str) -> None:
+        log.debug("%s", msg)
+
+    def info(self, msg: str) -> None:
+        log.info("%s", msg)
+
+    def warning(self, msg: str) -> None:
+        log.warning("%s", msg)
+
+    def error(self, msg: str) -> None:
+        log.error("%s", msg)
+
+
+YDL_LOGGER = YdlLogger()
+
+
 def base_opts() -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
@@ -273,6 +299,7 @@ def base_opts() -> dict[str, Any]:
         "extractor_retries": 1,
         "socket_timeout": 10,
         "cachedir": False,   # the filesystem is read-only except /tmp
+        "logger": YDL_LOGGER,   # never touch sys.stderr; see YdlLogger
     }
     cookies = cookie_file()
     if cookies:
