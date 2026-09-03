@@ -120,18 +120,34 @@ def ffmpeg_exe() -> str | None:
         return None
 
 
-def transcode(src: Path, dst: Path, bitrate: str, meta: dict[str, Any], cover: Path | None) -> None:
+def transcode(
+    src: Path,
+    dst: Path,
+    bitrate: str,
+    meta: dict[str, Any],
+    cover: Path | None,
+    start: float = 0.0,
+    end: float | None = None,
+) -> None:
     """Encode `src` to an mp3, embedding tags and (when possible) cover art.
 
     Driving ffmpeg directly keeps this working where ffprobe is unavailable,
-    which is what yt-dlp's own audio postprocessor needs.
+    which is what yt-dlp's own audio postprocessor needs, and leaves the trim
+    to the same pass rather than a second one.
     """
     exe = ffmpeg_exe()
     if not exe:
         raise RuntimeError("ffmpeg לא זמין בשרת")
 
     def build(with_cover: bool) -> list[str]:
-        cmd = [exe, "-y", "-hide_banner", "-loglevel", "error", "-i", str(src)]
+        cmd = [exe, "-y", "-hide_banner", "-loglevel", "error"]
+        # -ss ahead of the input seeks cheaply; -t then counts from that point,
+        # which avoids the ambiguity of an absolute -to after a seek.
+        if start > 0:
+            cmd += ["-ss", f"{start:.2f}"]
+        cmd += ["-i", str(src)]
+        if end is not None and end > start:
+            cmd += ["-t", f"{end - start:.2f}"]
         if with_cover:
             cmd += ["-i", str(cover)]
             cmd += ["-map", "0:a:0", "-map", "1:v:0", "-c:v", "mjpeg", "-disposition:v", "attached_pic"]
@@ -173,6 +189,9 @@ class Job:
     filename: str | None = None
     filesize: int | None = None
     error: str | None = None
+    start: float = 0.0
+    end: float | None = None
+    name: str | None = None
     created: float = field(default_factory=time.time)
 
     def public(self) -> dict[str, Any]:
@@ -196,7 +215,13 @@ JOBS_LOCK = threading.Lock()
 
 
 def sweep_jobs() -> None:
-    """Drop finished jobs (and their files) once they age out."""
+    """Drop finished jobs and any working directory that has aged out.
+
+    The directory scan matters more than the job list: a single-request
+    download keeps no job record, so nothing else would ever collect it if the
+    delete after sending did not run. On a serverless host these files live in
+    memory, which makes a leak here an outage later.
+    """
     cutoff = time.time() - JOB_TTL_SECONDS
     with JOBS_LOCK:
         stale = [j for j in JOBS.values() if j.created < cutoff]
@@ -204,6 +229,14 @@ def sweep_jobs() -> None:
             JOBS.pop(job.id, None)
     for job in stale:
         shutil.rmtree(WORK_DIR / job.id, ignore_errors=True)
+
+    live = set(JOBS)
+    try:
+        for path in WORK_DIR.iterdir():
+            if path.is_dir() and path.name not in live and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
 
 
 # --- helpers ----------------------------------------------------------------
@@ -221,6 +254,26 @@ def check_url(url: str) -> str:
 
 def check_bitrate(bitrate: str) -> str:
     return bitrate if bitrate in ALLOWED_BITRATES else "192"
+
+
+def read_span(get) -> tuple[float, float | None]:
+    """Read an optional start/end cut, ignoring anything that is not usable."""
+
+    def number(key: str) -> float | None:
+        raw = get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, value)
+
+    start = number("start") or 0.0
+    end = number("end")
+    if end is not None and end <= start:
+        end = None
+    return start, end
 
 
 def safe_name(title: str) -> str:
@@ -479,21 +532,26 @@ def convert(job: Job, out_dir: Path) -> Path:
         raise RuntimeError("לא הורד קובץ אודיו")
     covers = [p for p in out_dir.glob("source.*") if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
 
+    if job.duration and job.start >= job.duration:
+        raise ApiError(400, "נקודת ההתחלה מאוחרת מסוף הסרטון")
+
     job.status = "converting"
     job.progress = 100.0
 
-    target = out_dir / safe_name(job.title)
+    target = out_dir / safe_name(job.name or job.title)
     transcode(
         sources[0],
         target,
         job.bitrate,
         {
-            "title": data.get("track") or data.get("title"),
+            "title": job.name or data.get("track") or data.get("title"),
             "artist": data.get("artist") or data.get("uploader") or data.get("channel"),
             "album": data.get("album"),
             "comment": data.get("webpage_url"),
         },
         covers[0] if covers else None,
+        job.start,
+        job.end,
     )
 
     sources[0].unlink(missing_ok=True)
@@ -591,14 +649,65 @@ def diag():
     )
 
 
+@app.get("/api/search")
+def search():
+    """Search YouTube and return enough to render a picker."""
+    query = (request.args.get("q") or "").strip()
+    if len(query) < 2:
+        raise ApiError(400, "מה לחפש?")
+    try:
+        limit = max(1, min(20, int(request.args.get("limit", "12"))))
+    except ValueError:
+        limit = 12
+
+    opts = base_opts()
+    # A flat listing skips resolving every result's streams, which is the
+    # difference between a search that feels instant and one that does not.
+    opts.update({"extract_flat": "in_playlist", "skip_download": True})
+
+    def run() -> dict[str, Any]:
+        with YoutubeDL(opts) as ydl:
+            return ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+
+    try:
+        data = run_bounded(run, timeout=INFO_DEADLINE)
+    except TimeoutError as exc:
+        raise ApiError(504, "החיפוש לא הספיק לענות") from exc
+    except Exception as exc:  # noqa: BLE001 - surfaced to the client as a message
+        log.warning("search failed: %s", exc)
+        raise ApiError(502, friendly_error(exc)) from exc
+
+    results = []
+    for entry in (data.get("entries") or []):
+        if not entry or not entry.get("id"):
+            continue
+        results.append(
+            {
+                "id": entry["id"],
+                "title": entry.get("title") or "ללא שם",
+                "uploader": entry.get("uploader") or entry.get("channel"),
+                "duration": int(entry.get("duration") or 0) or None,
+                # The flat listing often omits thumbnails; this URL is derivable
+                # from the id and always exists for a public video.
+                "thumbnail": f"https://i.ytimg.com/vi/{entry['id']}/mqdefault.jpg",
+                "url": entry.get("url") or f"https://www.youtube.com/watch?v={entry['id']}",
+            }
+        )
+    return jsonify({"query": query, "results": results})
+
+
 @app.get("/api/download")
 def download():
     """Convert and hand back the mp3 within a single request."""
     sweep_jobs()
+    start, end = read_span(request.args.get)
     job = Job(
         id=uuid.uuid4().hex[:12],
         url=check_url(request.args.get("url", "")),
         bitrate=check_bitrate(request.args.get("bitrate", "192")),
+        start=start,
+        end=end,
+        name=(request.args.get("name") or "").strip() or None,
     )
     out_dir = WORK_DIR / job.id
 
@@ -614,9 +723,27 @@ def download():
         shutil.rmtree(out_dir, ignore_errors=True)
         raise ApiError(500, friendly_error(exc)) from exc
 
-    with JOBS_LOCK:
-        JOBS[job.id] = job  # keeps the sweeper responsible for the file
-    return send_file(target, mimetype="audio/mpeg", as_attachment=True, download_name=target.name)
+    return deliver_and_discard(target, out_dir)
+
+
+def deliver_and_discard(target: Path, out_dir: Path) -> Response:
+    """Send the file, then remove it — on a serverless host /tmp is memory.
+
+    The delete rides on the response body rather than on call_on_close, which
+    is never invoked for a send_file response, and the finally clause covers a
+    client that hangs up part way through.
+    """
+    response = send_file(target, mimetype="audio/mpeg", as_attachment=True, download_name=target.name)
+    body = response.response
+
+    def stream():
+        try:
+            yield from body
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    response.response = stream()
+    return response
 
 
 def run_job(job: Job) -> None:
@@ -636,7 +763,15 @@ def create_job():
     if not ffmpeg_exe():
         raise ApiError(503, "ffmpeg לא מותקן בשרת")
 
-    job = Job(id=uuid.uuid4().hex[:12], url=url, bitrate=check_bitrate(payload.get("bitrate", "192")))
+    start, end = read_span(payload.get)
+    job = Job(
+        id=uuid.uuid4().hex[:12],
+        url=url,
+        bitrate=check_bitrate(payload.get("bitrate", "192")),
+        start=start,
+        end=end,
+        name=(payload.get("name") or "").strip() or None,
+    )
     with JOBS_LOCK:
         JOBS[job.id] = job
     threading.Thread(target=run_job, args=(job,), daemon=True).start()

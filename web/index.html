@@ -15,7 +15,7 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
-<link rel="stylesheet" href="./css/app.css?v=13">
+<link rel="stylesheet" href="./css/app.css?v=14">
 <script>
   // Applied before first paint: the deferred bundle would arrive a frame late,
   // and a flash of the wrong theme is the one bug a theme toggle must not have.
@@ -65,6 +65,15 @@
       </button>
     </section>
 
+    <!-- תוצאות חיפוש -->
+    <section class="card results-card" id="results-card" hidden>
+      <div class="card-head">
+        <h3>תוצאות חיפוש</h3>
+        <span class="muted small" id="results-count"></span>
+      </div>
+      <ul class="results" id="results"></ul>
+    </section>
+
     <!-- טעינת פרטים -->
     <section class="card preview skeleton" id="preview-loading" hidden>
       <div class="sk-thumb"></div>
@@ -78,6 +87,39 @@
       <div class="pv-text">
         <h2 id="pv-title">—</h2>
         <p class="muted" id="pv-meta">—</p>
+      </div>
+    </section>
+
+    <!-- שם הקובץ -->
+    <section class="card" id="name-card" hidden>
+      <div class="card-head"><h3>שם הקובץ</h3></div>
+      <label class="field name-field">
+        <input id="name" type="text" maxlength="120" enterkeyhint="done"
+               spellcheck="false" aria-label="שם הקובץ">
+        <span class="ext" aria-hidden="true">.mp3</span>
+      </label>
+    </section>
+
+    <!-- חיתוך -->
+    <section class="card" id="trim-card" hidden>
+      <div class="card-head">
+        <h3>חיתוך קטע</h3>
+        <button class="switch" id="trim-toggle" type="button" role="switch" aria-checked="false">
+          <span class="switch-knob"></span>
+        </button>
+      </div>
+      <div class="trim-body" id="trim-body" hidden>
+        <div class="trim-row">
+          <span class="trim-label">מ־</span>
+          <input id="trim-start" type="range" min="0" value="0" step="1" aria-label="נקודת התחלה">
+          <span class="trim-time" id="trim-start-time">0:00</span>
+        </div>
+        <div class="trim-row">
+          <span class="trim-label">עד</span>
+          <input id="trim-end" type="range" min="0" value="0" step="1" aria-label="נקודת סיום">
+          <span class="trim-time" id="trim-end-time">0:00</span>
+        </div>
+        <p class="muted small" id="trim-summary"></p>
       </div>
     </section>
 
@@ -127,6 +169,15 @@
       </div>
     </section>
 
+    <!-- תור -->
+    <section class="history" id="queue-section" hidden>
+      <div class="card-head">
+        <h3>תור הורדות</h3>
+        <button class="link-btn" id="btn-clear-queue" type="button">ניקוי</button>
+      </div>
+      <ul class="hist-list" id="queue-list"></ul>
+    </section>
+
     <!-- היסטוריה -->
     <section class="history" id="history" hidden>
       <div class="card-head">
@@ -148,10 +199,13 @@
   </main>
 
   <!-- פעולה ראשית -->
-  <div class="action-bar" id="action-bar">
+  <div class="action-bar action-bar-row" id="action-bar">
     <button class="btn btn-primary" id="btn-main" type="button" disabled>
       <span class="spinner" id="btn-spinner" hidden aria-hidden="true"></span>
       <span class="btn-label" id="btn-main-label">הדביקו קישור</span>
+    </button>
+    <button class="btn btn-queue" id="btn-queue" type="button" hidden aria-label="הוספה לתור">
+      <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
     </button>
   </div>
 
@@ -159,6 +213,6 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="./js/app.js?v=13" defer></script>
+<script src="./js/app.js?v=14" defer></script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '13';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '14';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -18,6 +18,13 @@
     empty: $('empty'), history: $('history'), histList: $('hist-list'),
     clearHistory: $('btn-clear-history'), build: $('build'),
     theme: $('btn-theme'), topLoad: $('topbar-load'),
+    resultsCard: $('results-card'), results: $('results'), resultsCount: $('results-count'),
+    nameCard: $('name-card'), name: $('name'),
+    trimCard: $('trim-card'), trimToggle: $('trim-toggle'), trimBody: $('trim-body'),
+    trimStart: $('trim-start'), trimEnd: $('trim-end'),
+    trimStartTime: $('trim-start-time'), trimEndTime: $('trim-end-time'), trimSummary: $('trim-summary'),
+    queueSection: $('queue-section'), queueList: $('queue-list'),
+    clearQueue: $('btn-clear-queue'), queueAdd: $('btn-queue'),
     spinner: $('btn-spinner'), loadingNote: $('loading-note'),
     main: $('btn-main'), mainLabel: $('btn-main-label'),
     toast: $('toast'),
@@ -37,6 +44,11 @@
     mode: null,     // 'jobs' = live progress from a server you run; 'sync' = one-shot (serverless)
     direct: '',     // set at boot: a hosting proxy caps dynamic requests, this bypasses it
     lastName: '',
+    results: [],       // search hits waiting to be picked
+    searching: false,
+    trimOn: false,
+    queue: [],         // items waiting their turn, plus the finished ones
+    running: false,
     phase: 'idle', // idle | loading | ready | working | done | error
     lastFile: null,
     es: null,
@@ -149,6 +161,23 @@
     return false;
   }
 
+  /* ---------- what to convert ---------- */
+
+  function currentSpec(url) {
+    const duration = state.info?.duration || 0;
+    const on = state.trimOn && duration > 0;
+    return {
+      url: url || firstUrl(el.url.value) || el.url.value.trim(),
+      bitrate: state.bitrate,
+      name: el.name.value.trim(),
+      start: on ? Number(el.trimStart.value) : 0,
+      end: on && Number(el.trimEnd.value) < duration ? Number(el.trimEnd.value) : null,
+      title: state.info?.title || '',
+      thumbnail: state.info?.thumbnail || '',
+      duration: on ? Number(el.trimEnd.value) - Number(el.trimStart.value) : duration || null,
+    };
+  }
+
   /* ---------- theme ---------- */
 
   function applyTheme(mode) {
@@ -189,14 +218,20 @@
     // Quality stays reachable for as long as there is a video on screen —
     // including after a download, so another bitrate is one tap away.
     el.qualityCard.hidden = !(state.info && p !== 'loading');
+    el.nameCard.hidden = !(state.info && p !== 'loading');
+    el.trimCard.hidden = !(state.info && state.info.duration && p !== 'loading');
+    el.queueAdd.hidden = !(state.info && (p === 'ready' || p === 'done' || p === 'error'));
+    el.resultsCard.hidden = state.results.length === 0;
     el.chips.classList.toggle('is-locked', p === 'working');
     el.progressCard.hidden = p !== 'working';
     el.doneCard.hidden = p !== 'done';
     el.errorCard.hidden = p !== 'error';
-    el.empty.hidden = !(p === 'idle' && !state.info && !readHistory().length);
+    el.empty.hidden = !(p === 'idle' && !state.info && !readHistory().length
+                        && !state.results.length && !state.queue.length);
     el.clear.hidden = !el.url.value;
 
     renderHistory();
+    renderQueue();
 
     const label = {
       idle: 'הדביקו קישור',
@@ -219,6 +254,9 @@
 
   function showInfo(info) {
     state.info = info;
+    el.name.value = (info.title || 'audio').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 120);
+    setupTrim(info.duration);
+    clearResults();
     el.title.textContent = info.title || '—';
     el.meta.textContent = [info.uploader, ltr(fmtTime(info.duration))].filter(Boolean).join(' · ');
     if (info.thumbnail) { el.thumb.src = info.thumbnail; el.thumb.hidden = false; }
@@ -238,6 +276,225 @@
     el.errorReason.hidden = !reason;
     render();
     buzz(30);
+  }
+
+  /* ---------- search ---------- */
+
+  let searchToken = 0;
+
+  async function runSearch(query) {
+    const token = ++searchToken;
+    state.searching = true;
+    el.resultsCount.textContent = 'מחפש…';
+    el.resultsCard.hidden = false;
+
+    try {
+      const data = await api(`/api/search?q=${encodeURIComponent(query)}`, { timeout: 45000 });
+      if (token !== searchToken) return;          // a newer query won
+      state.results = data.results || [];
+      renderResults();
+    } catch (err) {
+      if (token !== searchToken) return;
+      state.results = [];
+      el.results.textContent = '';
+      el.resultsCount.textContent = err.message;
+    } finally {
+      if (token === searchToken) state.searching = false;
+      render();
+    }
+  }
+
+  function clearResults() {
+    searchToken++;
+    state.results = [];
+    el.results.textContent = '';
+    el.resultsCount.textContent = '';
+  }
+
+  function renderResults() {
+    el.resultsCount.textContent = state.results.length
+      ? ltr(`${state.results.length}`)
+      : 'לא נמצאו תוצאות';
+
+    const frag = document.createDocumentFragment();
+    for (const item of state.results) {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'result';
+
+      const thumb = document.createElement('div');
+      thumb.className = 'result-thumb';
+      const img = document.createElement('img');
+      img.src = item.thumbnail;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      // a broken image icon is worse than the plain placeholder behind it
+      img.addEventListener('error', () => img.remove());
+      thumb.appendChild(img);
+      if (item.duration) {
+        const len = document.createElement('span');
+        len.className = 'len';
+        len.textContent = fmtTime(item.duration);
+        thumb.appendChild(len);
+      }
+      btn.appendChild(thumb);
+
+      const body = document.createElement('div');
+      body.className = 'result-body';
+      const title = document.createElement('strong');
+      title.textContent = item.title;
+      const who = document.createElement('span');
+      who.textContent = item.uploader || '';
+      body.append(title, who);
+      btn.appendChild(body);
+
+      btn.addEventListener('click', () => {
+        clearResults();
+        el.url.value = item.url;
+        buzz();
+        loadInfo(item.url);
+      });
+
+      li.appendChild(btn);
+      frag.appendChild(li);
+    }
+    el.results.replaceChildren(frag);
+  }
+
+  /* ---------- trim ---------- */
+
+  function setupTrim(duration) {
+    const max = Math.max(1, Math.round(duration || 0));
+    for (const slider of [el.trimStart, el.trimEnd]) slider.max = String(max);
+    el.trimStart.value = '0';
+    el.trimEnd.value = String(max);
+    state.trimOn = false;
+    el.trimToggle.setAttribute('aria-checked', 'false');
+    el.trimBody.hidden = true;
+    renderTrim();
+  }
+
+  function renderTrim() {
+    const from = Number(el.trimStart.value);
+    const to = Number(el.trimEnd.value);
+    el.trimStartTime.textContent = fmtTime(from) || '0:00';
+    el.trimEndTime.textContent = fmtTime(to) || '0:00';
+    el.trimSummary.textContent = `אורך הקטע ${ltr(fmtTime(Math.max(0, to - from)) || '0:00')}`;
+  }
+
+  /* ---------- queue ---------- */
+
+  function renderQueue() {
+    el.queueSection.hidden = state.queue.length === 0;
+    if (!state.queue.length) { el.queueList.textContent = ''; return; }
+
+    const words = { waiting: 'ממתין', running: 'ממיר', done: 'מוכן', error: 'נכשל' };
+    const frag = document.createDocumentFragment();
+
+    for (const item of state.queue) {
+      const li = document.createElement('li');
+      const row = document.createElement('div');
+      row.className = 'hist-item';
+
+      if (item.thumbnail) {
+        const img = document.createElement('img');
+        img.src = item.thumbnail;
+        img.alt = '';
+        img.loading = 'lazy';
+        img.addEventListener('error', () => img.remove());
+        row.appendChild(img);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'hist-body';
+      const title = document.createElement('strong');
+      title.textContent = item.name || item.title || item.url;
+      const meta = document.createElement('span');
+      meta.textContent = item.status === 'error'
+        ? item.error
+        : [ltr(`${item.bitrate} kbps`), item.blob ? ltr(fmtSize(item.blob.size)) : ''].filter(Boolean).join(' · ');
+      body.append(title, meta);
+      row.appendChild(body);
+
+      if (item.status === 'done' && item.blob) {
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'q-save';
+        save.textContent = 'שמירה';
+        save.addEventListener('click', () => saveBlob(item));
+        row.appendChild(save);
+      } else {
+        const state_ = document.createElement('span');
+        state_.className = `q-state is-${item.status}`;
+        state_.textContent = words[item.status] || item.status;
+        row.appendChild(state_);
+      }
+
+      li.appendChild(row);
+      frag.appendChild(li);
+    }
+    el.queueList.replaceChildren(frag);
+  }
+
+  function saveBlob(item) {
+    const href = URL.createObjectURL(item.blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = item.fileName || 'audio.mp3';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 30000);
+  }
+
+  function enqueue() {
+    const spec = currentSpec();
+    if (!isUrl(spec.url)) { toast('אין קישור להוסיף'); return; }
+
+    state.queue.push({ ...spec, id: `${Date.now()}-${state.queue.length}`, status: 'waiting', blob: null });
+    toast('נוסף לתור');
+    buzz();
+
+    // Clear the picker for the next one, leaving the queue to run on its own.
+    el.url.value = '';
+    state.info = null;
+    state.phase = 'idle';
+    clearResults();
+    render();
+    runQueue();
+  }
+
+  async function runQueue() {
+    if (state.running) return;             // one at a time: the server converts serially anyway
+    state.running = true;
+    try {
+      for (;;) {
+        const item = state.queue.find((q) => q.status === 'waiting');
+        if (!item) break;
+        item.status = 'running';
+        renderQueue();
+        try {
+          const { blob, name } = await fetchMp3(item);
+          item.blob = blob;
+          item.fileName = name;
+          item.status = 'done';
+          pushHistory({
+            url: item.url, title: item.name || item.title, thumbnail: item.thumbnail,
+            bitrate: item.bitrate, filesize: blob.size, at: Date.now(),
+          });
+          saveBlob(item);                  // browsers may refuse a burst; the row keeps a button
+        } catch (err) {
+          item.status = 'error';
+          item.error = err.message;
+        }
+        render();
+      }
+    } finally {
+      state.running = false;
+      render();
+    }
   }
 
   /* ---------- history ---------- */
@@ -375,17 +632,24 @@
     return plain ? plain[1].trim() : fallback;
   }
 
-  async function syncDownload(url) {
-    // One request does the whole job, so there is no progress to poll until
-    // the server starts sending the finished file.
-    const query = `url=${encodeURIComponent(url)}&bitrate=${state.bitrate}`;
+  function buildQuery(spec) {
+    const q = new URLSearchParams({ url: spec.url, bitrate: spec.bitrate });
+    if (spec.name) q.set('name', spec.name);
+    if (spec.start) q.set('start', String(Math.round(spec.start)));
+    if (spec.end) q.set('end', String(Math.round(spec.end)));
+    return q.toString();
+  }
+
+  /**
+   * Convert one video and return the finished audio.
+   * `onProgress(received, total)` is called while the file is transferred; the
+   * conversion itself gives nothing to report until the server starts sending.
+   */
+  async function fetchMp3(spec, onProgress) {
     // The direct endpoint avoids a hosting proxy's request cap; same origin is
     // the fallback if it cannot be reached.
     const bases = [state.direct, state.server].filter((v, i, a) => v && a.indexOf(v) === i);
-
-    el.pgLabel.textContent = 'מוריד וממיר';
-    el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)} · זה יכול לקחת עד דקה`;
-    setProgress(0, true);
+    const query = buildQuery(spec);
 
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 900000);
@@ -397,9 +661,14 @@
           const attempt = await fetch(`${base}/api/download?${query}`, { signal: ctrl.signal });
           if (attempt.ok) { res = attempt; break; }
           const data = await attempt.json().catch(() => ({}));
-          lastError = new Error(data.detail || `שגיאת שרת (${attempt.status})`);
-          // 4xx other than "not found" is the server's verdict, not a routing fault
-          if (attempt.status < 500 && attempt.status !== 404) break;
+          const detail = data.detail;
+          const message = detail && typeof detail === 'object'
+            ? (detail.message || `שגיאת שרת (${attempt.status})`)
+            : (detail || `שגיאת שרת (${attempt.status})`);
+          lastError = new Error(message);
+          if (detail && typeof detail === 'object') lastError.reason = detail.reason || '';
+          // a gateway or missing route is the path's fault, not the request's
+          if (![502, 503, 504, 404].includes(attempt.status)) break;
         } catch (err) {
           if (err.name === 'AbortError') throw err;
           lastError = new Error('אין חיבור לשרת ההמרה');
@@ -410,10 +679,6 @@
       const name = filenameFrom(res.headers.get('Content-Disposition'), 'audio.mp3');
       const total = Number(res.headers.get('Content-Length')) || 0;
 
-      el.pgLabel.textContent = 'מעביר את הקובץ';
-      setProgress(0, !total);
-
-      // Read the body so the transfer itself can drive the bar.
       let blob;
       if (res.body && total) {
         const reader = res.body.getReader();
@@ -424,24 +689,42 @@
           if (done) break;
           chunks.push(value);
           got += value.length;
-          setProgress((got / total) * 100);
-          el.pgSub.textContent = `${ltr(fmtSize(got))} מתוך ${ltr(fmtSize(total))}`;
+          onProgress?.(got, total);
         }
         blob = new Blob(chunks, { type: 'audio/mpeg' });
       } else {
+        onProgress?.(0, 0);
         blob = await res.blob();
       }
+      return { blob, name };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function syncDownload(url) {
+    const spec = currentSpec(url);
+
+    el.pgLabel.textContent = 'מוריד וממיר';
+    el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)} · זה יכול לקחת עד דקה`;
+    setProgress(0, true);
+
+    try {
+      const { blob, name } = await fetchMp3(spec, (got, total) => {
+        if (!total) return;
+        el.pgLabel.textContent = 'מעביר את הקובץ';
+        setProgress((got / total) * 100);
+        el.pgSub.textContent = `${ltr(fmtSize(got))} מתוך ${ltr(fmtSize(total))}`;
+      });
 
       if (state.lastFile && state.lastFile.startsWith('blob:')) URL.revokeObjectURL(state.lastFile);
       finish(
-        { title: state.info?.title, filesize: blob.size, duration: state.info?.duration },
+        { title: spec.name || state.info?.title, filesize: blob.size, duration: spec.duration },
         URL.createObjectURL(blob),
         name
       );
     } catch (err) {
-      fail(err.name === 'AbortError' ? 'ההמרה ארכה יותר מדי וההורדה בוטלה' : err.message);
-    } finally {
-      clearTimeout(timer);
+      fail(err.name === 'AbortError' ? 'ההמרה ארכה יותר מדי וההורדה בוטלה' : err.message, err.reason);
     }
   }
 
@@ -535,18 +818,31 @@
     render();
     clearTimeout(typeTimer);
     const v = el.url.value.trim();
-    if (!isUrl(v)) return;
-    typeTimer = setTimeout(() => loadInfo(v), 450);
+
+    if (isUrl(v)) {
+      clearResults();
+      typeTimer = setTimeout(() => loadInfo(v), 450);
+    } else if (v.length >= 2) {
+      typeTimer = setTimeout(() => runSearch(v), 550);   // plain words are a search
+    } else {
+      clearResults();
+      render();
+    }
   });
 
   el.url.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { el.url.blur(); loadInfo(el.url.value); }
+    if (e.key !== 'Enter') return;
+    el.url.blur();
+    const v = el.url.value.trim();
+    if (isUrl(v)) loadInfo(v);
+    else if (v.length >= 2) runSearch(v);
   });
 
   el.clear.addEventListener('click', () => {
     el.url.value = '';
     state.info = null;
     state.phase = 'idle';
+    clearResults();
     stopStream();
     render();
     el.url.focus();
@@ -556,9 +852,11 @@
     try {
       const text = await navigator.clipboard.readText();
       const url = firstUrl(text);
-      if (!url) { toast('אין קישור בלוח'); return; }
       buzz();
-      loadInfo(url);
+      if (url) { el.url.value = url; loadInfo(url); return; }
+      const words = (text || '').trim();
+      if (words.length >= 2) { el.url.value = words; runSearch(words); return; }
+      toast('אין קישור בלוח');
     } catch {
       el.url.focus();
       toast('הדביקו ידנית בשדה');
@@ -591,6 +889,39 @@
     const v = el.url.value.trim();
     if (isUrl(v)) loadInfo(v, { autostart: true });
     else el.url.focus();
+  });
+
+  el.trimToggle.addEventListener('click', () => {
+    state.trimOn = !state.trimOn;
+    el.trimToggle.setAttribute('aria-checked', String(state.trimOn));
+    el.trimBody.hidden = !state.trimOn;
+    buzz();
+    if (state.phase === 'done') { state.phase = 'ready'; render(); }
+  });
+
+  // The two sliders share one range and must not cross each other.
+  el.trimStart.addEventListener('input', () => {
+    if (Number(el.trimStart.value) >= Number(el.trimEnd.value)) {
+      el.trimStart.value = String(Math.max(0, Number(el.trimEnd.value) - 1));
+    }
+    renderTrim();
+  });
+  el.trimEnd.addEventListener('input', () => {
+    if (Number(el.trimEnd.value) <= Number(el.trimStart.value)) {
+      el.trimEnd.value = String(Number(el.trimStart.value) + 1);
+    }
+    renderTrim();
+  });
+
+  el.name.addEventListener('input', () => {
+    if (state.phase === 'done') { state.phase = 'ready'; render(); }
+  });
+
+  el.queueAdd.addEventListener('click', enqueue);
+
+  el.clearQueue.addEventListener('click', () => {
+    state.queue = state.queue.filter((q) => q.status === 'running');
+    render();
   });
 
   el.theme.addEventListener('click', toggleTheme);

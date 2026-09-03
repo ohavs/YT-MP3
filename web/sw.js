@@ -4,7 +4,7 @@
    tags the asset URLs, so a new release can never be served out of an old
    one. Every shell fetch bypasses the HTTP cache as well — without that, a
    fresh install would happily re-cache the previous build's files. */
-const BUILD = '13';
+const BUILD = '14';
 const CACHE = `ytmp3-v${BUILD}`;
 
 const SHELL = [
