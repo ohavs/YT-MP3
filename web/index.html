@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>YT‑MP3 · הורדת מוזיקה</title>
+<meta name="description" content="ממירים קישור מיוטיוב ל‑MP3 באיכות גבוהה, ישר מהנייד.">
+<meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f6f8" media="(prefers-color-scheme: light)">
+<meta name="color-scheme" content="dark light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="YT‑MP3">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 3v10.6a3.5 3.5 0 1 0 2 3.16V7.8c1.6.35 3 1.2 3.6 2.7.5-3.2-1.4-6.2-5.6-7.5Z"/></svg>
+      </span>
+      <h1>YT<span class="dot">·</span>MP3</h1>
+    </div>
+    <button class="icon-btn" id="btn-settings" type="button" aria-label="הגדרות">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>
+    </button>
+  </header>
+
+  <main class="content" id="content">
+
+    <!-- כתובת -->
+    <section class="card input-card">
+      <label class="field" for="url">
+        <span class="field-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+        </span>
+        <input id="url" type="url" inputmode="url" dir="ltr" spellcheck="false"
+               autocapitalize="off" autocorrect="off" enterkeyhint="go"
+               placeholder="https://youtu.be/…" aria-label="קישור לסרטון">
+        <button class="clear-btn" id="btn-clear" type="button" aria-label="ניקוי" hidden>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </label>
+      <button class="btn btn-ghost btn-paste" id="btn-paste" type="button">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+        הדבקת קישור
+      </button>
+    </section>
+
+    <!-- טעינת פרטים -->
+    <section class="card preview skeleton" id="preview-loading" hidden>
+      <div class="sk-thumb"></div>
+      <div class="sk-lines"><span class="sk-line"></span><span class="sk-line short"></span></div>
+    </section>
+
+    <!-- תצוגה מקדימה -->
+    <section class="card preview" id="preview" hidden>
+      <img class="thumb" id="pv-thumb" alt="" hidden loading="lazy" decoding="async" width="112" height="112">
+      <div class="pv-text">
+        <h2 id="pv-title">—</h2>
+        <p class="muted" id="pv-meta">—</p>
+      </div>
+    </section>
+
+    <!-- איכות -->
+    <section class="card" id="quality-card" hidden>
+      <div class="card-head">
+        <h3>איכות</h3>
+        <span class="muted small" id="quality-hint">192 kbps</span>
+      </div>
+      <div class="chips" id="chips" role="radiogroup" aria-label="איכות שמע">
+        <button class="chip" type="button" role="radio" data-v="128">128</button>
+        <button class="chip is-on" type="button" role="radio" data-v="192" aria-checked="true">192</button>
+        <button class="chip" type="button" role="radio" data-v="256">256</button>
+        <button class="chip" type="button" role="radio" data-v="320">320</button>
+      </div>
+    </section>
+
+    <!-- התקדמות -->
+    <section class="card progress-card" id="progress-card" hidden>
+      <div class="pg-head">
+        <span id="pg-label">מוריד…</span>
+        <span class="pg-pct" id="pg-pct">0%</span>
+      </div>
+      <div class="pg-track"><div class="pg-bar" id="pg-bar"></div></div>
+      <p class="muted small" id="pg-sub">מתחבר לשרת…</p>
+    </section>
+
+    <!-- מוכן -->
+    <section class="card done-card" id="done-card" hidden>
+      <div class="done-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg>
+      </div>
+      <div class="pv-text">
+        <h2 id="done-title">הקובץ מוכן</h2>
+        <p class="muted" id="done-meta">—</p>
+      </div>
+    </section>
+
+    <!-- הודעת שגיאה -->
+    <section class="card error-card" id="error-card" hidden>
+      <div class="err-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8v5M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>
+      </div>
+      <p id="error-text">—</p>
+    </section>
+
+    <!-- היסטוריה -->
+    <section class="history" id="history" hidden>
+      <div class="card-head">
+        <h3>אחרונים</h3>
+        <button class="link-btn" id="btn-clear-history" type="button">ניקוי</button>
+      </div>
+      <ul class="hist-list" id="hist-list"></ul>
+    </section>
+
+    <!-- מצב ריק -->
+    <section class="empty" id="empty">
+      <div class="empty-art" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M12 15l-4-4M12 15l4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      </div>
+      <p>הדביקו קישור מיוטיוב וקבלו MP3</p>
+      <p class="muted small">אפשר גם לשתף סרטון ישירות לאפליקציה</p>
+    </section>
+
+  </main>
+
+  <!-- פעולה ראשית -->
+  <div class="action-bar" id="action-bar">
+    <button class="btn btn-primary" id="btn-main" type="button" disabled>
+      <span class="btn-label" id="btn-main-label">הדביקו קישור</span>
+    </button>
+  </div>
+
+</div>
+
+<!-- גיליון הגדרות -->
+<div class="sheet-root" id="sheet" hidden>
+  <div class="sheet-scrim" id="sheet-scrim"></div>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <h2 id="sheet-title">הגדרות</h2>
+
+    <label class="sheet-label" for="server">כתובת השרת</label>
+    <input id="server" type="url" inputmode="url" dir="ltr" spellcheck="false"
+           autocapitalize="off" autocorrect="off" placeholder="http://localhost:8000" class="sheet-input">
+    <p class="muted small">האפליקציה סטטית ורצה ב‑GitHub Pages. את ההמרה עצמה מבצע שרת yt‑dlp קטן שאתם מריצים (ראו README).</p>
+
+    <div class="sheet-status" id="server-status" hidden></div>
+
+    <div class="sheet-actions">
+      <button class="btn btn-ghost" id="btn-test" type="button">בדיקת חיבור</button>
+      <button class="btn btn-primary" id="btn-save" type="button">שמירה</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="./js/app.js" defer></script>
+</body>
+</html>
