@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '12';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '13';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -17,11 +17,13 @@
     errorCard: $('error-card'), errorText: $('error-text'), errorReason: $('error-reason'),
     empty: $('empty'), history: $('history'), histList: $('hist-list'),
     clearHistory: $('btn-clear-history'), build: $('build'),
+    theme: $('btn-theme'), topLoad: $('topbar-load'),
+    spinner: $('btn-spinner'), loadingNote: $('loading-note'),
     main: $('btn-main'), mainLabel: $('btn-main-label'),
     toast: $('toast'),
   };
 
-  const LS = { bitrate: 'ytmp3.bitrate', history: 'ytmp3.history' };
+  const LS = { bitrate: 'ytmp3.bitrate', history: 'ytmp3.history', theme: 'ytmp3.theme' };
 
   // Deployed backend, used if the same-origin route is not answering. Keeping it
   // here means the app still works when only one of the two paths is healthy.
@@ -147,6 +149,31 @@
     return false;
   }
 
+  /* ---------- theme ---------- */
+
+  function applyTheme(mode) {
+    const root = document.documentElement;
+    if (mode) root.setAttribute('data-theme', mode);
+    else root.removeAttribute('data-theme');   // no choice stored: follow the system
+
+    const dark = mode ? mode === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    // The browser chrome reads a single tag, so replace the media-split pair.
+    for (const tag of document.querySelectorAll('meta[name="theme-color"]')) tag.remove();
+    const meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    meta.content = dark ? '#0b0b0f' : '#f6f6f8';
+    document.head.appendChild(meta);
+  }
+
+  function toggleTheme() {
+    const stored = localStorage.getItem(LS.theme);
+    const dark = stored ? stored === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    const next = dark ? 'light' : 'dark';
+    localStorage.setItem(LS.theme, next);
+    applyTheme(next);
+    buzz();
+  }
+
   /* ---------- rendering ---------- */
 
   el.thumb.addEventListener('error', () => { el.thumb.hidden = true; });
@@ -154,9 +181,15 @@
   function render() {
     const p = state.phase;
 
+    const busy = p === 'loading' || p === 'working';
+
     el.previewLoading.hidden = p !== 'loading';
+    el.loadingNote.hidden = p !== 'loading';
     el.preview.hidden = !(state.info && p !== 'loading');
-    el.qualityCard.hidden = !(state.info && (p === 'ready' || p === 'error'));
+    // Quality stays reachable for as long as there is a video on screen —
+    // including after a download, so another bitrate is one tap away.
+    el.qualityCard.hidden = !(state.info && p !== 'loading');
+    el.chips.classList.toggle('is-locked', p === 'working');
     el.progressCard.hidden = p !== 'working';
     el.doneCard.hidden = p !== 'done';
     el.errorCard.hidden = p !== 'error';
@@ -175,8 +208,13 @@
     }[p];
 
     el.mainLabel.textContent = label;
-    el.main.disabled = p === 'loading' || p === 'working' || (p === 'idle' && !isUrl(el.url.value.trim()));
+    el.main.disabled = busy || (p === 'idle' && !isUrl(el.url.value.trim()));
     if (p === 'idle' && isUrl(el.url.value.trim())) el.mainLabel.textContent = 'הורדה כ‑MP3';
+
+    // Three signals for one state, because waiting is the moment the app feels broken.
+    el.topLoad.hidden = !busy;
+    el.spinner.hidden = !busy;
+    el.main.classList.toggle('is-busy', busy);
   }
 
   function showInfo(info) {
@@ -539,6 +577,12 @@
     }
     el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
     buzz();
+
+    // The finished file is at the old bitrate, so offer the download again.
+    if (state.phase === 'done') {
+      state.phase = 'ready';
+      render();
+    }
   });
 
   el.main.addEventListener('click', () => {
@@ -549,6 +593,8 @@
     else el.url.focus();
   });
 
+  el.theme.addEventListener('click', toggleTheme);
+
   el.clearHistory.addEventListener('click', () => {
     localStorage.removeItem(LS.history);
     render();
@@ -558,6 +604,8 @@
   /* ---------- boot ---------- */
 
   function init() {
+    applyTheme(localStorage.getItem(LS.theme));
+
     for (const c of el.chips.children) {
       const on = c.dataset.v === state.bitrate;
       c.classList.toggle('is-on', on);

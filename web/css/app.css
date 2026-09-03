@@ -27,17 +27,30 @@
   --ease: cubic-bezier(.22, .61, .36, 1);
 }
 
+/* Dark is the base. The system decides unless the reader picked a side, and
+   an explicit choice wins in both directions — hence the same palette twice. */
 @media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f6f6f8;
-    --bg-soft: #ffffff;
-    --surface: #ffffff;
-    --surface-2: #f0f0f4;
-    --line: #e4e4ec;
-    --text: #14141a;
-    --muted: #6c6c80;
-    --shadow: 0 6px 22px rgba(20, 20, 40, .08);
+  :root:not([data-theme="dark"]) {
+  --bg: #f6f6f8;
+  --bg-soft: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f0f0f4;
+  --line: #e4e4ec;
+  --text: #14141a;
+  --muted: #6c6c80;
+  --shadow: 0 6px 22px rgba(20, 20, 40, .08);
   }
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f6f8;
+  --bg-soft: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f0f0f4;
+  --line: #e4e4ec;
+  --text: #14141a;
+  --muted: #6c6c80;
+  --shadow: 0 6px 22px rgba(20, 20, 40, .08);
 }
 
 * { box-sizing: border-box; }
@@ -484,4 +497,77 @@ p { margin: 0; }
   text-align: left;
   word-break: break-word;
   color: color-mix(in srgb, var(--err) 75%, var(--text));
+}
+
+
+/* ---------- theme toggle ---------- */
+
+.theme-btn {
+  width: 40px; height: 40px;
+  flex: none;
+  display: grid; place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: transform .12s var(--ease);
+}
+.theme-btn:active { transform: scale(.92); }
+/* one button, two glyphs: show the theme it switches to */
+.theme-btn .to-dark { display: none; }
+:root[data-theme="dark"] .theme-btn .to-dark,
+.theme-btn .to-light { display: block; }
+:root[data-theme="dark"] .theme-btn .to-light { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-btn .to-light { display: none; }
+  :root:not([data-theme="light"]) .theme-btn .to-dark { display: block; }
+}
+
+/* ---------- work in progress ---------- */
+
+/* a hairline that runs across the top whenever the app is waiting on the network */
+.topbar-load {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 2.5px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.topbar-load::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  width: 45%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  animation: sweep 1.15s var(--ease) infinite;
+}
+@keyframes sweep {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+.spinner {
+  width: 17px; height: 17px;
+  flex: none;
+  border-radius: 50%;
+  border: 2.5px solid color-mix(in srgb, var(--accent-ink) 35%, transparent);
+  border-top-color: var(--accent-ink);
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* the busy state should read as busy, not as disabled */
+.btn.is-busy { opacity: 1; }
+.btn.is-busy:disabled { opacity: .85; }
+
+.chips.is-locked { opacity: .5; pointer-events: none; }
+
+.loading-note {
+  margin-top: -4px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
 }
