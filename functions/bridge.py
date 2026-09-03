@@ -346,6 +346,22 @@ def friendly_error(exc: Exception) -> str:
     return text[:300] or "ההורדה נכשלה"
 
 
+async def run_bounded(fn, *args, timeout: float):
+    """Run blocking work and give up waiting after `timeout`, without blocking.
+
+    asyncio.wait_for cannot help here: a thread running yt-dlp does not answer
+    cancellation, and wait_for waits for the cancellation it requested — so a
+    single stuck call would hold the request open no matter what budget was
+    set. asyncio.wait simply stops waiting; the orphaned thread is left to
+    finish on its own and dies with the instance.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        raise asyncio.TimeoutError
+    return task.result()
+
+
 def first_reason(report: list[dict[str, Any]]) -> str | None:
     """The raw text of the first failure, trimmed to something a person can read."""
     for entry in report:
@@ -481,9 +497,9 @@ async def info(req: InfoRequest) -> dict[str, Any]:
     report: list[dict[str, Any]] = []
     try:
         data = single_entry(
-            await asyncio.wait_for(
-                asyncio.to_thread(extract_info, url, base_opts(), False, INFO_DEADLINE, report),
-                timeout=INFO_DEADLINE + 8,
+            await run_bounded(
+                extract_info, url, base_opts(), False, INFO_DEADLINE, report,
+                timeout=INFO_DEADLINE + 5,
             )
         )
     except asyncio.TimeoutError as exc:
@@ -534,9 +550,9 @@ async def diag(url: str = Query(...)) -> dict[str, Any]:
     started = time.monotonic()
     title = None
     try:
-        data = await asyncio.wait_for(
-            asyncio.to_thread(extract_info, target, base_opts(), False, INFO_DEADLINE, report),
-            timeout=INFO_DEADLINE + 8,
+        data = await run_bounded(
+            extract_info, target, base_opts(), False, INFO_DEADLINE, report,
+            timeout=INFO_DEADLINE + 5,
         )
         title = single_entry(data).get("title")
     except Exception as exc:  # noqa: BLE001 - the failure is the point of this endpoint

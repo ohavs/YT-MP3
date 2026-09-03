@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '9';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '10';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -25,7 +25,7 @@
 
   // Deployed backend, used if the same-origin route is not answering. Keeping it
   // here means the app still works when only one of the two paths is healthy.
-  const FALLBACK_API = 'https://us-central1-yt-mp3-57bee.cloudfunctions.net/api';
+  const FALLBACK_API = 'https://api-wdmkdg3ysa-uc.a.run.app';
 
   const state = {
     server: '',
@@ -80,17 +80,18 @@
   }
 
   async function api(path, options = {}) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), options.timeout || 45000);
-
     // The backend's own address goes first: a hosting proxy caps how long a
     // dynamic request may run, and a lookup can legitimately exceed that cap —
     // which the proxy reports as a gateway error, not as anything informative.
     const bases = [state.direct, state.server].filter((v, i, a) => v && a.indexOf(v) === i);
+    const budget = options.timeout || 45000;
     let lastError = null;
 
-    try {
-      for (const base of bases) {
+    for (const base of bases) {
+      // Per route, so one that hangs cannot spend the other's turn.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), budget);
+      try {
         let res;
         try {
           res = await fetch(base + path, {
@@ -99,9 +100,10 @@
             headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
           });
         } catch (err) {
-          if (err.name === 'AbortError') throw new Error('השרת לא הגיב בזמן');
-          lastError = new Error('אין חיבור לשרת ההמרה. נסו שוב בעוד רגע');
-          continue;   // this route is unreachable; the other one may not be
+          lastError = err.name === 'AbortError'
+            ? new Error('השרת לא הגיב בזמן')
+            : new Error('אין חיבור לשרת ההמרה. נסו שוב בעוד רגע');
+          continue;   // this route failed us; the other one may not
         }
 
         const data = await res.json().catch(() => ({}));
@@ -114,13 +116,13 @@
           throw err;                     // the backend answered; that answer stands
         }
         lastError = new Error(detail || `שגיאת שרת (${res.status})`);
-        // 502/504/404 mean the route failed us, not the request — try the other
+        // a gateway or missing route is the path's fault, not the request's
         if (![502, 503, 504, 404].includes(res.status)) throw lastError;
+      } finally {
+        clearTimeout(timer);
       }
-      throw lastError || new Error('אין חיבור לשרת ההמרה');
-    } finally {
-      clearTimeout(timer);
     }
+    throw lastError || new Error('אין חיבור לשרת ההמרה');
   }
 
   async function loadHealth() {
@@ -272,7 +274,7 @@
 
     const token = ++infoToken;
     try {
-      const info = await api('/api/info', { method: 'POST', body: JSON.stringify({ url }), timeout: 90000 });
+      const info = await api('/api/info', { method: 'POST', body: JSON.stringify({ url }), timeout: 45000 });
       if (token !== infoToken) return; // a newer request won
       showInfo(info);
       state.phase = 'ready';
