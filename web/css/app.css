@@ -470,3 +470,15 @@ p { margin: 0; }
   letter-spacing: .04em;
   color: color-mix(in srgb, var(--muted) 55%, transparent);
 }
+
+/* the underlying failure, kept legible but secondary to the message */
+.err-body { min-width: 0; }
+.err-reason {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  direction: ltr;
+  text-align: left;
+  word-break: break-word;
+  color: color-mix(in srgb, var(--err) 75%, var(--text));
+}

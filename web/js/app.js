@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '7';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '8';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -14,7 +14,7 @@
     progressCard: $('progress-card'), pgLabel: $('pg-label'), pgPct: $('pg-pct'),
     pgBar: $('pg-bar'), pgTrack: document.querySelector('.pg-track'), pgSub: $('pg-sub'),
     doneCard: $('done-card'), doneTitle: $('done-title'), doneMeta: $('done-meta'),
-    errorCard: $('error-card'), errorText: $('error-text'),
+    errorCard: $('error-card'), errorText: $('error-text'), errorReason: $('error-reason'),
     empty: $('empty'), history: $('history'), histList: $('hist-list'),
     clearHistory: $('btn-clear-history'), build: $('build'),
     main: $('btn-main'), mainLabel: $('btn-main-label'),
@@ -91,7 +91,15 @@
         headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `שגיאת שרת (${res.status})`);
+      if (!res.ok) {
+        const detail = data.detail;
+        if (detail && typeof detail === 'object') {
+          const err = new Error(detail.message || `שגיאת שרת (${res.status})`);
+          err.reason = detail.reason || '';
+          throw err;
+        }
+        throw new Error(detail || `שגיאת שרת (${res.status})`);
+      }
       return data;
     } catch (err) {
       if (err.name === 'AbortError') throw new Error('השרת לא הגיב בזמן');
@@ -170,9 +178,11 @@
     el.pgPct.textContent = indeterminate ? '' : `${Math.round(pct)}%`;
   }
 
-  function fail(message) {
+  function fail(message, reason) {
     state.phase = 'error';
     el.errorText.textContent = message;
+    el.errorReason.textContent = reason || '';
+    el.errorReason.hidden = !reason;
     render();
     buzz(30);
   }
@@ -249,7 +259,7 @@
 
     const token = ++infoToken;
     try {
-      const info = await api('/api/info', { method: 'POST', body: JSON.stringify({ url }), timeout: 60000 });
+      const info = await api('/api/info', { method: 'POST', body: JSON.stringify({ url }), timeout: 90000 });
       if (token !== infoToken) return; // a newer request won
       showInfo(info);
       state.phase = 'ready';
@@ -257,7 +267,7 @@
       if (autostart) start();
     } catch (err) {
       if (token !== infoToken) return;
-      fail(err.message);
+      fail(err.message, err.reason);
     }
   }
 

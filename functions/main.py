@@ -9,7 +9,7 @@ because a serverless instance cannot be relied on to keep job state.
 import os
 
 from a2wsgi import ASGIMiddleware
-from firebase_functions import https_fn, options
+from firebase_functions import https_fn, options, scheduler_fn
 from werkzeug.wrappers import Response
 
 os.environ.setdefault("SYNC_ONLY", "1")
@@ -52,3 +52,39 @@ def normalize(environ: dict) -> dict:
 )
 def api(request: https_fn.Request) -> https_fn.Response:
     return Response.from_app(wsgi_app, normalize(dict(request.environ)))
+
+
+# --- self test -------------------------------------------------------------
+#
+# Nothing outside Google's network can be reached from the machine this was
+# developed on, so the deployment has to report on itself: this runs the same
+# extraction the API does and writes the result to the logs, which tells us
+# whether YouTube is challenging this IP range or refusing it outright.
+
+SELFTEST_URL = os.getenv("SELFTEST_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+
+@scheduler_fn.on_schedule(
+    schedule="*/10 * * * *",
+    region="us-central1",
+    memory=options.MemoryOption.GB_1,
+    timeout_sec=300,
+)
+def selftest(event: scheduler_fn.ScheduledEvent) -> None:
+    import json
+
+    from bridge import INFO_DEADLINE, base_opts, extract_info, ffmpeg_exe, single_entry
+
+    report: list[dict] = []
+    title = None
+    error = None
+    try:
+        title = single_entry(extract_info(SELFTEST_URL, base_opts(), False, INFO_DEADLINE, report)).get("title")
+    except Exception as exc:  # noqa: BLE001 - the failure is what we came to record
+        error = str(exc)[:600]
+
+    print("SELFTEST " + json.dumps(
+        {"ok": title is not None, "title": title, "error": error,
+         "ffmpeg": bool(ffmpeg_exe()), "attempts": report},
+        ensure_ascii=False,
+    ))

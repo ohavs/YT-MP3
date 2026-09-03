@@ -69,7 +69,7 @@ log = logging.getLogger("ytmp3")
 
 # How long metadata lookup may spend before giving the caller a real answer.
 # It has to land well inside the client's patience and any proxy's own cap.
-INFO_DEADLINE = int(os.getenv("INFO_DEADLINE_SECONDS", "40"))
+INFO_DEADLINE = int(os.getenv("INFO_DEADLINE_SECONDS", "25"))
 
 app = FastAPI(title="YT-MP3 bridge", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -263,6 +263,7 @@ def base_opts() -> dict[str, Any]:
         "retries": 1,
         "extractor_retries": 1,
         "socket_timeout": 10,
+        "cachedir": False,   # the filesystem is read-only except /tmp
     }
     cookies = cookie_file()
     if cookies:
@@ -343,6 +344,16 @@ def friendly_error(exc: Exception) -> str:
     if "unsupported url" in low:
         return "הקישור הזה לא נתמך"
     return text[:300] or "ההורדה נכשלה"
+
+
+def first_reason(report: list[dict[str, Any]]) -> str | None:
+    """The raw text of the first failure, trimmed to something a person can read."""
+    for entry in report:
+        if not entry.get("ok") and entry.get("error"):
+            text = re.sub(r"\s+", " ", entry["error"]).replace("ERROR: ", "")
+            text = re.sub(r"; please report.*$", "", text)
+            return f"[{entry['client']}] {text[:180]}"
+    return None
 
 
 def pick_thumbnail(info: dict[str, Any]) -> str | None:
@@ -467,10 +478,11 @@ def health() -> dict[str, Any]:
 async def info(req: InfoRequest) -> dict[str, Any]:
     url = check_url(req.url)
 
+    report: list[dict[str, Any]] = []
     try:
         data = single_entry(
             await asyncio.wait_for(
-                asyncio.to_thread(extract_info, url, base_opts(), False, INFO_DEADLINE),
+                asyncio.to_thread(extract_info, url, base_opts(), False, INFO_DEADLINE, report),
                 timeout=INFO_DEADLINE + 8,
             )
         )
@@ -478,14 +490,23 @@ async def info(req: InfoRequest) -> dict[str, Any]:
         log.error("info timed out for %s", url)
         raise HTTPException(
             status_code=504,
-            detail="יוטיוב לא ענה בזמן. נסו שוב — או שהסרטון חסום לשרתים",
+            detail={
+                "message": "יוטיוב לא ענה בזמן",
+                "reason": first_reason(report),
+            },
         ) from exc
     except DownloadError as exc:
-        raise HTTPException(status_code=422, detail=friendly_error(exc)) from exc
+        raise HTTPException(
+            status_code=422,
+            detail={"message": friendly_error(exc), "reason": first_reason(report) or str(exc)[:200]},
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as a message
-        raise HTTPException(status_code=500, detail=friendly_error(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail={"message": friendly_error(exc), "reason": first_reason(report) or str(exc)[:200]},
+        ) from exc
 
     duration = int(data.get("duration") or 0)
     if MAX_DURATION_SECONDS and duration > MAX_DURATION_SECONDS:

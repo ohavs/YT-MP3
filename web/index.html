@@ -15,7 +15,7 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
-<link rel="stylesheet" href="./css/app.css?v=7">
+<link rel="stylesheet" href="./css/app.css?v=8">
 </head>
 <body>
 
@@ -106,7 +106,10 @@
       <div class="err-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 8v5M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>
       </div>
-      <p id="error-text">—</p>
+      <div class="err-body">
+        <p id="error-text">—</p>
+        <p class="err-reason" id="error-reason" hidden></p>
+      </div>
     </section>
 
     <!-- היסטוריה -->
@@ -141,6 +144,6 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="./js/app.js?v=7" defer></script>
+<script src="./js/app.js?v=8" defer></script>
 </body>
 </html>
