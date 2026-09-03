@@ -41,6 +41,9 @@ def normalize(environ: dict) -> dict:
 
 @https_fn.on_request(
     region="us-central1",
+    # The PWA calls this anonymously from the browser; without an explicit
+    # public invoker Google answers unauthenticated requests with 403.
+    invoker="public",
     memory=options.MemoryOption.GB_1,
     timeout_sec=540,
     cpu=1,

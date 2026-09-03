@@ -16,20 +16,17 @@
     empty: $('empty'), history: $('history'), histList: $('hist-list'),
     clearHistory: $('btn-clear-history'),
     main: $('btn-main'), mainLabel: $('btn-main-label'),
-    sheet: $('sheet'), scrim: $('sheet-scrim'), settings: $('btn-settings'),
-    server: $('server'), serverStatus: $('server-status'),
-    test: $('btn-test'), save: $('btn-save'),
     toast: $('toast'),
   };
 
-  const LS = { server: 'ytmp3.server', bitrate: 'ytmp3.bitrate', history: 'ytmp3.history' };
+  const LS = { bitrate: 'ytmp3.bitrate', history: 'ytmp3.history' };
 
   // Deployed backend, used if the same-origin route is not answering. Keeping it
   // here means the app still works when only one of the two paths is healthy.
   const FALLBACK_API = 'https://api-wdmkdg3ysa-uc.a.run.app';
 
   const state = {
-    server: localStorage.getItem(LS.server) || '',
+    server: '',
     bitrate: localStorage.getItem(LS.bitrate) || '192',
     info: null,
     job: null,
@@ -81,7 +78,6 @@
   }
 
   async function api(path, options = {}) {
-    if (!state.server) throw new Error('לא הוגדרה כתובת שרת. פתחו את ההגדרות ⚙︎');
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), options.timeout || 45000);
     try {
@@ -95,7 +91,7 @@
       return data;
     } catch (err) {
       if (err.name === 'AbortError') throw new Error('השרת לא הגיב בזמן');
-      if (err instanceof TypeError) throw new Error('אין חיבור לשרת. בדקו את הכתובת בהגדרות');
+      if (err instanceof TypeError) throw new Error('אין חיבור לשרת ההמרה. נסו שוב בעוד רגע');
       throw err;
     } finally {
       clearTimeout(timer);
@@ -282,7 +278,7 @@
       el.pgLabel.textContent = 'מתחבר לשרת';
       el.pgSub.textContent = 'מעיר את השרת — כמה שניות בפעם הראשונה';
       if (!(await loadHealth())) {
-        fail('לא הצלחנו להתחבר לשרת ההמרה. בדקו את הכתובת ב‑⚙︎ הגדרות');
+        fail('שרת ההמרה לא זמין כרגע. נסו שוב בעוד רגע');
         return;
       }
     }
@@ -530,45 +526,6 @@
     toast('ההיסטוריה נוקתה');
   });
 
-  /* ---------- settings sheet ---------- */
-
-  const openSheet = () => {
-    el.server.value = state.server;
-    el.serverStatus.hidden = true;
-    el.sheet.hidden = false;
-  };
-  const closeSheet = () => { el.sheet.hidden = true; };
-
-  el.settings.addEventListener('click', openSheet);
-  el.scrim.addEventListener('click', closeSheet);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.sheet.hidden) closeSheet(); });
-
-  el.save.addEventListener('click', () => {
-    state.server = trimApi(el.server.value);
-    localStorage.setItem(LS.server, state.server);
-    loadHealth();
-    closeSheet();
-    toast(state.server ? 'הכתובת נשמרה' : 'הכתובת נוקתה');
-    if (state.server && isUrl(el.url.value.trim())) loadInfo(el.url.value);
-  });
-
-  el.test.addEventListener('click', async () => {
-    const base = trimApi(el.server.value);
-    el.serverStatus.hidden = false;
-    el.serverStatus.className = 'sheet-status';
-    el.serverStatus.textContent = 'בודק…';
-    try {
-      const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(8000) });
-      const data = await res.json();
-      if (!data.ok) throw new Error('תשובה לא צפויה');
-      el.serverStatus.className = 'sheet-status ok';
-      el.serverStatus.textContent = data.ffmpeg ? 'השרת מחובר ומוכן ✓' : 'השרת מחובר, אבל ffmpeg חסר';
-    } catch {
-      el.serverStatus.className = 'sheet-status bad';
-      el.serverStatus.textContent = 'לא הצלחנו להתחבר לכתובת הזו';
-    }
-  });
-
   /* ---------- boot ---------- */
 
   function init() {
@@ -579,14 +536,11 @@
     }
     el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
 
-    // Where the backend lives: a deploy that serves both from one origin needs
-    // no setup, and localhost gets the usual dev port. Only an address the user
-    // typed themselves is persisted, so this stays correct if the app moves.
-    if (!state.server) {
-      state.server = /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
-        ? `${location.protocol}//${location.hostname}:8000`
-        : location.origin;
-    }
+    // Where the backend lives. Nothing here is configurable: the deployed app
+    // serves its API from the same origin, and localhost gets the dev port.
+    state.server = /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
+      ? `${location.protocol}//${location.hostname}:8000`
+      : location.origin;
 
     render();
     loadHealth();   // also wakes a cold instance, before anything is asked of it

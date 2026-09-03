@@ -1,5 +1,5 @@
 /* Offline shell for YT-MP3. Bump CACHE to ship a new version. */
-const CACHE = 'ytmp3-v4';
+const CACHE = 'ytmp3-v5';
 
 const SHELL = [
   './',
