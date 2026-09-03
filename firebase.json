@@ -33,7 +33,25 @@
         ]
       },
       {
-        "source": "**/*.@(css|js|png|svg)",
+        "source": "/index.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(css|js)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(png|svg|jpg|webp)",
         "headers": [
           {
             "key": "Cache-Control",

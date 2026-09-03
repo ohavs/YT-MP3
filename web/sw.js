@@ -1,11 +1,17 @@
-/* Offline shell for YT-MP3. Bump CACHE to ship a new version. */
-const CACHE = 'ytmp3-v5';
+/* Offline shell for YT-MP3.
+
+   BUILD is the single thing to bump when shipping: it names the cache and
+   tags the asset URLs, so a new release can never be served out of an old
+   one. Every shell fetch bypasses the HTTP cache as well — without that, a
+   fresh install would happily re-cache the previous build's files. */
+const BUILD = '6';
+const CACHE = `ytmp3-v${BUILD}`;
 
 const SHELL = [
   './',
   './index.html',
-  './css/app.css',
-  './js/app.js',
+  `./css/app.css?v=${BUILD}`,
+  `./js/app.js?v=${BUILD}`,
   './manifest.webmanifest',
   './icons/favicon.svg',
   './icons/icon-192.png',
@@ -15,7 +21,7 @@ const SHELL = [
 self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE)
-      .then((c) => c.addAll(SHELL))
+      .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
   );
 });
@@ -34,7 +40,7 @@ self.addEventListener('fetch', (e) => {
 
   const url = new URL(req.url);
 
-  // Never touch the yt-dlp bridge or any cross-origin call.
+  // Never touch the conversion backend or any cross-origin call.
   if (url.origin !== self.location.origin) return;
   if (url.pathname.includes('/api/')) return;
 
@@ -46,7 +52,7 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Static assets: cache first, refresh in the background.
+  // Static assets: serve from cache, refresh in the background.
   e.respondWith(
     caches.match(req).then((hit) => {
       const net = fetch(req).then((res) => {

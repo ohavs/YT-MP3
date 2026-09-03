@@ -2,6 +2,8 @@
 (() => {
   'use strict';
 
+  const BUILD = '6';   // must match the tag in sw.js and the ?v= on the assets
+
   const $ = (id) => document.getElementById(id);
 
   const el = {
@@ -14,7 +16,7 @@
     doneCard: $('done-card'), doneTitle: $('done-title'), doneMeta: $('done-meta'),
     errorCard: $('error-card'), errorText: $('error-text'),
     empty: $('empty'), history: $('history'), histList: $('hist-list'),
-    clearHistory: $('btn-clear-history'),
+    clearHistory: $('btn-clear-history'), build: $('build'),
     main: $('btn-main'), mainLabel: $('btn-main-label'),
     toast: $('toast'),
   };
@@ -23,7 +25,7 @@
 
   // Deployed backend, used if the same-origin route is not answering. Keeping it
   // here means the app still works when only one of the two paths is healthy.
-  const FALLBACK_API = 'https://api-wdmkdg3ysa-uc.a.run.app';
+  const FALLBACK_API = 'https://us-central1-yt-mp3-57bee.cloudfunctions.net/api';
 
   const state = {
     server: '',
@@ -509,6 +511,7 @@
       c.setAttribute('aria-checked', String(on));
     }
     el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
+    if (el.build) el.build.textContent = ltr(`build ${BUILD}`);
     buzz();
   });
 
@@ -546,16 +549,32 @@
     loadHealth();   // also wakes a cold instance, before anything is asked of it
 
     // Shared in from YouTube (Web Share Target) or opened with ?url=
+    // A share can put the link in any of these — Android usually uses `text`,
+    // and often wraps it in a sentence — so scan all of them together.
     const q = new URLSearchParams(location.search);
-    const shared = firstUrl(q.get('url') || q.get('text') || q.get('title') || '');
-    if (shared) {
+    const handoff = ['url', 'text', 'title'].map((k) => q.get(k)).filter(Boolean).join(' ');
+    if (handoff) {
+      const shared = firstUrl(handoff);
       window.history.replaceState(null, '', location.pathname);
-      el.url.value = shared;
-      render();
-      loadInfo(shared, { autostart: YT_RE.test(shared) });
+      if (shared) {
+        el.url.value = shared;
+        render();
+        loadInfo(shared, { autostart: YT_RE.test(shared) });
+      } else {
+        toast('לא נמצא קישור במה ששותף');
+      }
     }
 
     if ('serviceWorker' in navigator) {
+      // A page that is already open keeps running the old script until it is
+      // reloaded, so hand control over as soon as a new build takes charge.
+      const hadController = !!navigator.serviceWorker.controller;
+      let reloading = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || reloading) return;
+        reloading = true;
+        location.reload();
+      });
       addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
     }
   }
