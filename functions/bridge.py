@@ -50,6 +50,17 @@ PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "").rstrip("/")
 WORK_DIR = Path(os.getenv("WORK_DIR") or tempfile.gettempdir()) / "ytmp3-jobs"
 ALLOWED_BITRATES = {"64", "96", "128", "192", "256", "320"}
 
+# YouTube answers as several different "clients". Some of them are the ones a
+# bot check tends to interrogate; others (tv_simply, android_vr, ios) do not
+# carry an account at all and usually sail past it. On a bot check we retry
+# down this list before asking anyone for cookies. Which entries work shifts
+# over time, so the list is an env var rather than a constant in the code.
+PLAYER_CLIENTS = [
+    c.strip()
+    for c in os.getenv("YTDLP_PLAYER_CLIENTS", "default,tv_simply,android_vr,ios,web_safari").split(",")
+    if c.strip()
+]
+
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="YT-MP3 bridge", docs_url=None, redoc_url=None)
@@ -202,6 +213,38 @@ def safe_name(title: str) -> str:
     return name[:120] + ".mp3"
 
 
+def cookie_file() -> str | None:
+    """Locate a cookies file, accepting the contents straight from the env.
+
+    A serverless instance has no persistent disk to put a file on, so
+    YTDLP_COOKIES may carry the file's text itself (optionally "b64:"-prefixed
+    to survive single-line env formats).
+    """
+    path = os.getenv("YTDLP_COOKIES_FILE")
+    if path and Path(path).is_file():
+        return path
+
+    blob = os.getenv("YTDLP_COOKIES", "").strip()
+    if not blob:
+        return None
+    if blob.startswith("b64:"):
+        import base64
+
+        try:
+            blob = base64.b64decode(blob[4:]).decode("utf-8")
+        except Exception:  # noqa: BLE001 - a malformed value must not kill the request
+            return None
+
+    blob = blob.rstrip("\n") + "\n"  # the cookie jar must end on a newline either way
+    target = Path(tempfile.gettempdir()) / "ytmp3-cookies.txt"
+    try:
+        if not target.is_file() or target.read_text(encoding="utf-8") != blob:
+            target.write_text(blob, encoding="utf-8")
+    except OSError:
+        return None
+    return str(target)
+
+
 def base_opts() -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
@@ -212,13 +255,41 @@ def base_opts() -> dict[str, Any]:
         "retries": 3,
         "socket_timeout": 20,
     }
-    cookies = os.getenv("YTDLP_COOKIES_FILE")
-    if cookies and Path(cookies).is_file():
+    cookies = cookie_file()
+    if cookies:
         opts["cookiefile"] = cookies
     proxy = os.getenv("YTDLP_PROXY")
     if proxy:
         opts["proxy"] = proxy
     return opts
+
+
+BOT_CHECK_RE = re.compile(
+    r"sign in to confirm|not a bot|confirm your age|failed to extract any player response|"
+    r"requested format is not available|please sign in",
+    re.I,
+)
+
+
+def extract_info(url: str, opts: dict[str, Any], download: bool) -> dict[str, Any]:
+    """Extract (and optionally download), working through the client list.
+
+    Only a bot check is retried — a private or deleted video fails on the
+    first attempt, because trying it four more ways would only be slower.
+    """
+    last: Exception | None = None
+    for client in PLAYER_CLIENTS:
+        attempt = dict(opts)
+        if client != "default":
+            attempt["extractor_args"] = {"youtube": {"player_client": [client]}}
+        try:
+            with YoutubeDL(attempt) as ydl:
+                return ydl.extract_info(url, download=download)
+        except DownloadError as exc:
+            last = exc
+            if not BOT_CHECK_RE.search(str(exc)):
+                raise
+    raise last if last else RuntimeError("ההורדה נכשלה")
 
 
 def friendly_error(exc: Exception) -> str:
@@ -229,7 +300,7 @@ def friendly_error(exc: Exception) -> str:
     if "unavailable" in low or "removed" in low:
         return "הסרטון לא זמין"
     if "sign in" in low or "bot" in low or "cookies" in low:
-        return "יוטיוב ביקש אימות. הוסיפו קובץ cookies לשרת ונסו שוב"
+        return "יוטיוב דורש אימות לסרטון הזה, וגם ניסיון בכל סוגי הנגנים לא עזר. נדרש קובץ cookies בשרת"
     if "unsupported url" in low:
         return "הקישור הזה לא נתמך"
     return text[:300] or "ההורדה נכשלה"
@@ -286,8 +357,7 @@ def convert(job: Job, out_dir: Path) -> Path:
         }
     )
 
-    with YoutubeDL(opts) as ydl:
-        data = single_entry(ydl.extract_info(job.url, download=True))
+    data = single_entry(extract_info(job.url, opts, download=True))
 
     job.title = data.get("title") or "audio"
     job.duration = int(data.get("duration") or 0) or None
@@ -347,6 +417,8 @@ def health() -> dict[str, Any]:
         "service": "yt-mp3-bridge",
         "ffmpeg": bool(ffmpeg_exe()),
         "mode": "sync" if SYNC_ONLY else "jobs",
+        "cookies": bool(cookie_file()),
+        "clients": PLAYER_CLIENTS,
         "direct_url": PUBLIC_API_URL or None,
         "bitrates": sorted(ALLOWED_BITRATES, key=int),
     }
@@ -356,12 +428,8 @@ def health() -> dict[str, Any]:
 async def info(req: InfoRequest) -> dict[str, Any]:
     url = check_url(req.url)
 
-    def extract() -> dict[str, Any]:
-        with YoutubeDL(base_opts()) as ydl:
-            return ydl.extract_info(url, download=False)
-
     try:
-        data = single_entry(await asyncio.to_thread(extract))
+        data = single_entry(await asyncio.to_thread(extract_info, url, base_opts(), False))
     except DownloadError as exc:
         raise HTTPException(status_code=422, detail=friendly_error(exc)) from exc
     except HTTPException:

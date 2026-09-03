@@ -24,12 +24,16 @@
 
   const LS = { server: 'ytmp3.server', bitrate: 'ytmp3.bitrate', history: 'ytmp3.history' };
 
+  // Deployed backend, used if the same-origin route is not answering. Keeping it
+  // here means the app still works when only one of the two paths is healthy.
+  const FALLBACK_API = 'https://api-wdmkdg3ysa-uc.a.run.app';
+
   const state = {
     server: localStorage.getItem(LS.server) || '',
     bitrate: localStorage.getItem(LS.bitrate) || '192',
     info: null,
     job: null,
-    mode: 'jobs',   // 'jobs' = live progress from a server you run; 'sync' = one-shot (serverless)
+    mode: null,     // 'jobs' = live progress from a server you run; 'sync' = one-shot (serverless)
     direct: null,   // bypasses a hosting proxy that would cap long requests
     lastName: '',
     phase: 'idle', // idle | loading | ready | working | done | error
@@ -99,17 +103,25 @@
   }
 
   async function loadHealth() {
-    if (!state.server) return false;
-    try {
-      const res = await fetch(`${state.server}/api/health`, { signal: AbortSignal.timeout(6000) });
-      const data = await res.json();
-      if (!data.ok) return false;
-      state.mode = data.mode === 'sync' ? 'sync' : 'jobs';
-      state.direct = data.direct_url ? trimApi(data.direct_url) : null;
-      return true;
-    } catch {
-      return false;   // fall back to job mode; the request itself will report any real fault
+    const tried = [];
+    for (const base of [state.server, FALLBACK_API]) {
+      const candidate = trimApi(base);
+      if (!candidate || tried.includes(candidate)) continue;
+      tried.push(candidate);
+      try {
+        // A serverless backend has to boot before it can answer, so this waits.
+        const res = await fetch(`${candidate}/api/health`, { signal: AbortSignal.timeout(25000) });
+        const data = await res.json();
+        if (!data.ok) continue;
+        state.server = candidate;
+        state.mode = data.mode === 'sync' ? 'sync' : 'jobs';
+        state.direct = data.direct_url ? trimApi(data.direct_url) : null;
+        return true;
+      } catch {
+        // a wrong address answers fast (404); only a waking instance is slow
+      }
     }
+    return false;
   }
 
   /* ---------- rendering ---------- */
@@ -237,7 +249,7 @@
 
     const token = ++infoToken;
     try {
-      const info = await api('/api/info', { method: 'POST', body: JSON.stringify({ url }), timeout: 30000 });
+      const info = await api('/api/info', { method: 'POST', body: JSON.stringify({ url }), timeout: 60000 });
       if (token !== infoToken) return; // a newer request won
       showInfo(info);
       state.phase = 'ready';
@@ -265,6 +277,15 @@
     setProgress(0, true);
     render();
     buzz();
+
+    if (!state.mode) {
+      el.pgLabel.textContent = 'מתחבר לשרת';
+      el.pgSub.textContent = 'מעיר את השרת — כמה שניות בפעם הראשונה';
+      if (!(await loadHealth())) {
+        fail('לא הצלחנו להתחבר לשרת ההמרה. בדקו את הכתובת ב‑⚙︎ הגדרות');
+        return;
+      }
+    }
 
     if (state.mode === 'sync') { syncDownload(url); return; }
 
@@ -550,21 +571,6 @@
 
   /* ---------- boot ---------- */
 
-  async function probeSameOrigin() {
-    try {
-      const res = await fetch('./api/health', { signal: AbortSignal.timeout(2500) });
-      const data = await res.json();
-      if (!data.ok) return false;
-      state.server = location.origin;
-      localStorage.setItem(LS.server, state.server);
-      state.mode = data.mode === 'sync' ? 'sync' : 'jobs';
-      state.direct = data.direct_url ? trimApi(data.direct_url) : null;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   function init() {
     for (const c of el.chips.children) {
       const on = c.dataset.v === state.bitrate;
@@ -573,14 +579,17 @@
     }
     el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
 
-    // First run on a desktop-ish origin: guess the local bridge.
-    if (!state.server && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
-      state.server = `${location.protocol}//${location.hostname}:8000`;
-      localStorage.setItem(LS.server, state.server);
+    // Where the backend lives: a deploy that serves both from one origin needs
+    // no setup, and localhost gets the usual dev port. Only an address the user
+    // typed themselves is persisted, so this stays correct if the app moves.
+    if (!state.server) {
+      state.server = /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
+        ? `${location.protocol}//${location.hostname}:8000`
+        : location.origin;
     }
 
     render();
-    if (state.server) loadHealth();
+    loadHealth();   // also wakes a cold instance, before anything is asked of it
 
     // Shared in from YouTube (Web Share Target) or opened with ?url=
     const q = new URLSearchParams(location.search);
@@ -589,15 +598,7 @@
       window.history.replaceState(null, '', location.pathname);
       el.url.value = shared;
       render();
-      const go = () => loadInfo(shared, { autostart: YT_RE.test(shared) });
-      if (state.server) go();
-      else probeSameOrigin().then((found) => {
-        if (found) go();
-        else { openSheet(); toast('הגדירו כתובת שרת כדי להוריד'); }
-      });
-    } else if (!state.server) {
-      // Same-origin deploy (Firebase Hosting -> Cloud Run) needs no setup at all.
-      probeSameOrigin().then((found) => { if (!found) openSheet(); });
+      loadInfo(shared, { autostart: YT_RE.test(shared) });
     }
 
     if ('serviceWorker' in navigator) {
