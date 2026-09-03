@@ -3,12 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-command -v ffmpeg >/dev/null || { echo "ffmpeg is required (brew install ffmpeg / apt install ffmpeg)"; exit 1; }
-
 [ -d .venv ] || python3 -m venv .venv
 source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
+
+command -v ffmpeg >/dev/null || echo "note: no system ffmpeg — falling back to the bundled build"
 
 echo "→ http://localhost:${PORT:-8000}"
 exec python app.py

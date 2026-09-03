@@ -29,6 +29,9 @@
     bitrate: localStorage.getItem(LS.bitrate) || '192',
     info: null,
     job: null,
+    mode: 'jobs',   // 'jobs' = live progress from a server you run; 'sync' = one-shot (serverless)
+    direct: null,   // bypasses a hosting proxy that would cap long requests
+    lastName: '',
     phase: 'idle', // idle | loading | ready | working | done | error
     lastFile: null,
     es: null,
@@ -92,6 +95,20 @@
       throw err;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  async function loadHealth() {
+    if (!state.server) return false;
+    try {
+      const res = await fetch(`${state.server}/api/health`, { signal: AbortSignal.timeout(6000) });
+      const data = await res.json();
+      if (!data.ok) return false;
+      state.mode = data.mode === 'sync' ? 'sync' : 'jobs';
+      state.direct = data.direct_url ? trimApi(data.direct_url) : null;
+      return true;
+    } catch {
+      return false;   // fall back to job mode; the request itself will report any real fault
     }
   }
 
@@ -249,6 +266,8 @@
     render();
     buzz();
 
+    if (state.mode === 'sync') { syncDownload(url); return; }
+
     let job;
     try {
       job = await api('/api/jobs', {
@@ -262,6 +281,71 @@
 
     state.job = job.id;
     watch(job.id);
+  }
+
+  function filenameFrom(header, fallback) {
+    const raw = header || '';
+    const utf8 = raw.match(/filename\*=(?:UTF-8|utf-8)''([^;]+)/);
+    if (utf8) { try { return decodeURIComponent(utf8[1]); } catch { /* keep looking */ } }
+    const plain = raw.match(/filename="([^"]+)"/) || raw.match(/filename=([^;]+)/);
+    return plain ? plain[1].trim() : fallback;
+  }
+
+  async function syncDownload(url) {
+    // One request does the whole job, so there is no progress to poll until
+    // the server starts sending the finished file.
+    const base = state.direct || state.server;
+    const endpoint = `${base}/api/download?url=${encodeURIComponent(url)}&bitrate=${state.bitrate}`;
+
+    el.pgLabel.textContent = 'מוריד וממיר';
+    el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)} · זה יכול לקחת עד דקה`;
+    setProgress(0, true);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 900000);
+    try {
+      const res = await fetch(endpoint, { signal: ctrl.signal });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `שגיאת שרת (${res.status})`);
+      }
+
+      const name = filenameFrom(res.headers.get('Content-Disposition'), 'audio.mp3');
+      const total = Number(res.headers.get('Content-Length')) || 0;
+
+      el.pgLabel.textContent = 'מעביר את הקובץ';
+      setProgress(0, !total);
+
+      // Read the body so the transfer itself can drive the bar.
+      let blob;
+      if (res.body && total) {
+        const reader = res.body.getReader();
+        const chunks = [];
+        let got = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          got += value.length;
+          setProgress((got / total) * 100);
+          el.pgSub.textContent = `${ltr(fmtSize(got))} מתוך ${ltr(fmtSize(total))}`;
+        }
+        blob = new Blob(chunks, { type: 'audio/mpeg' });
+      } else {
+        blob = await res.blob();
+      }
+
+      if (state.lastFile && state.lastFile.startsWith('blob:')) URL.revokeObjectURL(state.lastFile);
+      finish(
+        { title: state.info?.title, filesize: blob.size, duration: state.info?.duration },
+        URL.createObjectURL(blob),
+        name
+      );
+    } catch (err) {
+      fail(err.name === 'AbortError' ? 'ההמרה ארכה יותר מדי וההורדה בוטלה' : err.message);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function applyStatus(s) {
@@ -311,10 +395,11 @@
     }, 900);
   }
 
-  function finish(s) {
+  function finish(s, fileUrl, fileName) {
     stopStream();
     state.phase = 'done';
-    state.lastFile = `${state.server}/api/jobs/${state.job}/file`;
+    state.lastFile = fileUrl || `${state.server}/api/jobs/${state.job}/file`;
+    state.lastName = fileName || s.filename || '';
 
     el.doneTitle.textContent = s.title || state.info?.title || 'הקובץ מוכן';
     el.doneMeta.textContent = [ltr(`${state.bitrate} kbps`), ltr(fmtSize(s.filesize)), ltr(fmtTime(s.duration))]
@@ -339,7 +424,7 @@
     if (!state.lastFile) return;
     const a = document.createElement('a');
     a.href = state.lastFile;
-    a.download = '';
+    a.download = state.lastName || '';
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
@@ -427,6 +512,7 @@
   el.save.addEventListener('click', () => {
     state.server = trimApi(el.server.value);
     localStorage.setItem(LS.server, state.server);
+    loadHealth();
     closeSheet();
     toast(state.server ? 'הכתובת נשמרה' : 'הכתובת נוקתה');
     if (state.server && isUrl(el.url.value.trim())) loadInfo(el.url.value);
@@ -458,6 +544,8 @@
       if (!data.ok) return false;
       state.server = location.origin;
       localStorage.setItem(LS.server, state.server);
+      state.mode = data.mode === 'sync' ? 'sync' : 'jobs';
+      state.direct = data.direct_url ? trimApi(data.direct_url) : null;
       return true;
     } catch {
       return false;
@@ -479,6 +567,7 @@
     }
 
     render();
+    if (state.server) loadHealth();
 
     // Shared in from YouTube (Web Share Target) or opened with ?url=
     const q = new URLSearchParams(location.search);
