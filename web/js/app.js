@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '6';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '7';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -83,7 +83,9 @@
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), options.timeout || 45000);
     try {
-      const res = await fetch(state.server + path, {
+      // Prefer the backend's own address: a hosting proxy caps how long a
+      // dynamic request may take, and metadata lookups can run close to it.
+      const res = await fetch((state.direct || state.server) + path, {
         ...options,
         signal: ctrl.signal,
         headers: options.body ? { 'Content-Type': 'application/json' } : undefined,

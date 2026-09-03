@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -62,6 +63,13 @@ PLAYER_CLIENTS = [
 ]
 
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+log = logging.getLogger("ytmp3")
+
+# How long metadata lookup may spend before giving the caller a real answer.
+# It has to land well inside the client's patience and any proxy's own cap.
+INFO_DEADLINE = int(os.getenv("INFO_DEADLINE_SECONDS", "40"))
 
 app = FastAPI(title="YT-MP3 bridge", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -252,8 +260,9 @@ def base_opts() -> dict[str, Any]:
         "noprogress": True,
         "noplaylist": True,
         "geo_bypass": True,
-        "retries": 3,
-        "socket_timeout": 20,
+        "retries": 1,
+        "extractor_retries": 1,
+        "socket_timeout": 10,
     }
     cookies = cookie_file()
     if cookies:
@@ -271,24 +280,54 @@ BOT_CHECK_RE = re.compile(
 )
 
 
-def extract_info(url: str, opts: dict[str, Any], download: bool) -> dict[str, Any]:
+def extract_info(
+    url: str,
+    opts: dict[str, Any],
+    download: bool,
+    deadline: float | None = None,
+    report: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Extract (and optionally download), working through the client list.
 
-    Only a bot check is retried — a private or deleted video fails on the
-    first attempt, because trying it four more ways would only be slower.
+    Only a bot check moves on to the next client — a private or deleted video
+    fails on the first attempt, because trying it four more ways would only be
+    slower. `deadline` stops the walk before the caller gives up on us, so a
+    stuck lookup returns a real message instead of a hung request.
     """
+    started = time.monotonic()
     last: Exception | None = None
+
     for client in PLAYER_CLIENTS:
+        spent = time.monotonic() - started
+        if deadline is not None and spent >= deadline:
+            log.warning("deadline reached after %.1fs, stopping at client=%s", spent, client)
+            break
+
         attempt = dict(opts)
         if client != "default":
             attempt["extractor_args"] = {"youtube": {"player_client": [client]}}
+
+        t0 = time.monotonic()
         try:
             with YoutubeDL(attempt) as ydl:
-                return ydl.extract_info(url, download=download)
+                data = ydl.extract_info(url, download=download)
+            took = time.monotonic() - t0
+            log.info("client=%s ok in %.1fs", client, took)
+            if report is not None:
+                report.append({"client": client, "ok": True, "seconds": round(took, 1)})
+            return data
         except DownloadError as exc:
+            took = time.monotonic() - t0
+            message = str(exc)
+            log.warning("client=%s failed in %.1fs: %s", client, took, message[:400])
+            if report is not None:
+                report.append(
+                    {"client": client, "ok": False, "seconds": round(took, 1), "error": message[:400]}
+                )
             last = exc
-            if not BOT_CHECK_RE.search(str(exc)):
+            if not BOT_CHECK_RE.search(message):
                 raise
+
     raise last if last else RuntimeError("ההורדה נכשלה")
 
 
@@ -429,7 +468,18 @@ async def info(req: InfoRequest) -> dict[str, Any]:
     url = check_url(req.url)
 
     try:
-        data = single_entry(await asyncio.to_thread(extract_info, url, base_opts(), False))
+        data = single_entry(
+            await asyncio.wait_for(
+                asyncio.to_thread(extract_info, url, base_opts(), False, INFO_DEADLINE),
+                timeout=INFO_DEADLINE + 8,
+            )
+        )
+    except asyncio.TimeoutError as exc:
+        log.error("info timed out for %s", url)
+        raise HTTPException(
+            status_code=504,
+            detail="יוטיוב לא ענה בזמן. נסו שוב — או שהסרטון חסום לשרתים",
+        ) from exc
     except DownloadError as exc:
         raise HTTPException(status_code=422, detail=friendly_error(exc)) from exc
     except HTTPException:
@@ -452,6 +502,34 @@ async def info(req: InfoRequest) -> dict[str, Any]:
         "thumbnail": pick_thumbnail(data),
         "webpage_url": data.get("webpage_url") or url,
         "is_live": bool(data.get("is_live")),
+    }
+
+
+@app.get("/api/diag")
+async def diag(url: str = Query(...)) -> dict[str, Any]:
+    """Report what each player client actually said. Read by a human, not the app."""
+    target = check_url(url)
+    report: list[dict[str, Any]] = []
+    started = time.monotonic()
+    title = None
+    try:
+        data = await asyncio.wait_for(
+            asyncio.to_thread(extract_info, target, base_opts(), False, INFO_DEADLINE, report),
+            timeout=INFO_DEADLINE + 8,
+        )
+        title = single_entry(data).get("title")
+    except Exception as exc:  # noqa: BLE001 - the failure is the point of this endpoint
+        log.warning("diag failed: %s", exc)
+
+    return {
+        "url": target,
+        "title": title,
+        "succeeded": title is not None,
+        "total_seconds": round(time.monotonic() - started, 1),
+        "attempts": report,
+        "ffmpeg": bool(ffmpeg_exe()),
+        "cookies": bool(cookie_file()),
+        "yt_dlp": __import__("yt_dlp").version.__version__,
     }
 
 
