@@ -123,17 +123,31 @@ def _lab(region: str) -> None:
         print("REGIONLAB " + json.dumps(result))
 
 
-def _make_lab(region: str):
-    @scheduler_fn.on_schedule(schedule="0 0 1 1 *", region=region, memory=options.MemoryOption.GB_1, timeout_sec=300)
-    def lab(event: scheduler_fn.ScheduledEvent) -> None:
-        _lab(region)
-
-    return lab
+@scheduler_fn.on_schedule(schedule="0 0 1 1 *", region="europe-west1", memory=options.MemoryOption.GB_1, timeout_sec=300)
+def lab_euw1(event: scheduler_fn.ScheduledEvent) -> None:
+    _lab("europe-west1")
 
 
-lab_euw1 = _make_lab("europe-west1")
-lab_mew1 = _make_lab("me-west1")
-lab_asne1 = _make_lab("asia-northeast1")
-lab_use1 = _make_lab("us-east1")
-lab_sae1 = _make_lab("southamerica-east1")
-lab_ause1 = _make_lab("australia-southeast1")
+@scheduler_fn.on_schedule(schedule="0 0 1 1 *", region="me-west1", memory=options.MemoryOption.GB_1, timeout_sec=300)
+def lab_mew1(event: scheduler_fn.ScheduledEvent) -> None:
+    _lab("me-west1")
+
+
+@scheduler_fn.on_schedule(schedule="0 0 1 1 *", region="asia-northeast1", memory=options.MemoryOption.GB_1, timeout_sec=300)
+def lab_asne1(event: scheduler_fn.ScheduledEvent) -> None:
+    _lab("asia-northeast1")
+
+
+@scheduler_fn.on_schedule(schedule="0 0 1 1 *", region="us-east1", memory=options.MemoryOption.GB_1, timeout_sec=300)
+def lab_use1(event: scheduler_fn.ScheduledEvent) -> None:
+    _lab("us-east1")
+
+
+@scheduler_fn.on_schedule(schedule="0 0 1 1 *", region="southamerica-east1", memory=options.MemoryOption.GB_1, timeout_sec=300)
+def lab_sae1(event: scheduler_fn.ScheduledEvent) -> None:
+    _lab("southamerica-east1")
+
+
+@scheduler_fn.on_schedule(schedule="0 0 1 1 *", region="australia-southeast1", memory=options.MemoryOption.GB_1, timeout_sec=300)
+def lab_ause1(event: scheduler_fn.ScheduledEvent) -> None:
+    _lab("australia-southeast1")
