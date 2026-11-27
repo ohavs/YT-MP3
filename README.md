@@ -107,7 +107,7 @@ ffmpeg: אם יש אחד במערכת הוא ייבחר; אחרת נעשה שי�
 | `JOB_TTL_SECONDS` | `1800` | כמה זמן קובץ נשמר לפני מחיקה |
 | `MAX_DURATION_SECONDS` | `0` | חסימת סרטונים ארוכים (0 = ללא הגבלה) |
 | `MAX_VIDEO_MB` | `0` (בפונקציה: `400`) | תקרת גודל משוער להורדת וידאו; בפונקציה ‎/tmp הוא זיכרון, והווידאו נשמר בו פעמיים בזמן האיחוד |
-| `YTDLP_PLAYER_CLIENTS` | `default,tv_simply,android_vr,ios,web_safari` | שרשרת נגנים שמנוסים אוטומטית כשיוטיוב מציג בדיקת בוט |
+| `YTDLP_PLAYER_CLIENTS` | `default,tv_embedded,web_safari,web_embedded,tv_simply,android_vr` | שרשרת נגנים שמנוסים אוטומטית כשיוטיוב מציג בדיקת בוט |
 | `YTDLP_COOKIES` | — | תוכן קובץ ה‑cookies עצמו (אפשר `b64:` לקידוד base64) — לסביבות בלי דיסק |
 | `YTDLP_COOKIES_FILE` | — | נתיב לקובץ cookies |
 | `YTDLP_PROXY` | — | פרוקסי ל‑yt‑dlp |

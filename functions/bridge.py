@@ -64,7 +64,7 @@ MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "0"))
 # over time, so the list is an env var rather than a constant in the code.
 PLAYER_CLIENTS = [
     c.strip()
-    for c in os.getenv("YTDLP_PLAYER_CLIENTS", "default,tv_simply,android_vr,ios,web_safari").split(",")
+    for c in os.getenv("YTDLP_PLAYER_CLIENTS", "default,tv_embedded,web_safari,web_embedded,tv_simply,android_vr").split(",")
     if c.strip()
 ]
 
