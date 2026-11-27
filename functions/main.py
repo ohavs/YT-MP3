@@ -14,6 +14,9 @@ from werkzeug.wrappers import Response
 
 os.environ.setdefault("SYNC_ONLY", "1")
 os.environ.setdefault("WORK_DIR", "/tmp")
+# /tmp is memory here, and a video sits in it twice while its two streams are
+# joined (the parts, then the result). Kept well under the instance's 1 GB.
+os.environ.setdefault("MAX_VIDEO_MB", "400")
 
 from bridge import app as flask_app  # noqa: E402 - env must be set before import
 

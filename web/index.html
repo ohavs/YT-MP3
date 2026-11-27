@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>YT‑MP3 · הורדת מוזיקה</title>
-<meta name="description" content="ממירים קישור מיוטיוב ל‑MP3 באיכות גבוהה, ישר מהנייד.">
+<title>YT‑MP3 · הורדת מוזיקה ווידאו</title>
+<meta name="description" content="ממירים קישור מיוטיוב ל‑MP3 או מורידים את הסרטון בכל איכות, ישר מהנייד.">
 <meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f6f6f8" media="(prefers-color-scheme: light)">
 <meta name="color-scheme" content="dark light">
@@ -15,7 +15,7 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
-<link rel="stylesheet" href="./css/app.css?v=15">
+<link rel="stylesheet" href="./css/app.css?v=16">
 <script>
   // Applied before first paint: the deferred bundle would arrive a frame late,
   // and a flash of the wrong theme is the one bug a theme toggle must not have.
@@ -98,7 +98,7 @@
       <label class="field name-field">
         <input id="name" type="text" maxlength="120" enterkeyhint="done"
                spellcheck="false" aria-label="שם הקובץ">
-        <span class="ext" aria-hidden="true">.mp3</span>
+        <span class="ext" id="name-ext" aria-hidden="true">.mp3</span>
       </label>
     </section>
 
@@ -142,6 +142,7 @@
           <button class="btn btn-ghost mark-btn" id="mark-start" type="button">קביעת התחלה מהנגן</button>
           <button class="btn btn-ghost mark-btn" id="mark-end" type="button">קביעת סוף מהנגן</button>
         </div>
+        <p class="muted small trim-note" id="trim-note" hidden>בווידאו החיתוך נעשה בלי קידוד מחדש, ולכן מתחיל בפריים המפתח הקרוב — עד שנייה־שתיים לפני הנקודה שנבחרה.</p>
       </div>
     </section>
 
@@ -151,6 +152,17 @@
         <h3>איכות</h3>
         <span class="muted small" id="quality-hint">192 kbps</span>
       </div>
+      <div class="seg" id="kind" role="radiogroup" aria-label="סוג קובץ" hidden>
+        <button class="seg-btn is-on" type="button" role="radio" data-kind="audio" aria-checked="true">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true"><path d="M12 3v10.6a3.5 3.5 0 1 0 2 3.16V7.8c1.6.35 3 1.2 3.6 2.7.5-3.2-1.4-6.2-5.6-7.5Z"/></svg>
+          MP3
+        </button>
+        <button class="seg-btn" type="button" role="radio" data-kind="video" aria-checked="false">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="m16 10.5 5-3v9l-5-3Z"/></svg>
+          וידאו
+        </button>
+      </div>
+      <div class="chips vchips" id="vchips" role="radiogroup" aria-label="איכות וידאו" hidden></div>
       <div class="chips" id="chips" role="radiogroup" aria-label="איכות שמע">
         <button class="chip" type="button" role="radio" data-v="128">128</button>
         <button class="chip is-on" type="button" role="radio" data-v="192" aria-checked="true">192</button>
@@ -214,7 +226,7 @@
       <div class="empty-art" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M12 15l-4-4M12 15l4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
       </div>
-      <p>הדביקו קישור מיוטיוב וקבלו MP3</p>
+      <p>הדביקו קישור מיוטיוב וקבלו MP3 או וידאו</p>
       <p class="muted small">או לשתף סרטון מיוטיוב ישירות לאפליקציה</p>
     </section>
 
@@ -235,6 +247,6 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-<script src="./js/app.js?v=15" defer></script>
+<script src="./js/app.js?v=16" defer></script>
 </body>
 </html>

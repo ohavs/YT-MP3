@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const BUILD = '15';   // must match the tag in sw.js and the ?v= on the assets
+  const BUILD = '16';   // must match the tag in sw.js and the ?v= on the assets
 
   const $ = (id) => document.getElementById(id);
 
@@ -11,6 +11,7 @@
     previewLoading: $('preview-loading'), preview: $('preview'),
     thumb: $('pv-thumb'), title: $('pv-title'), meta: $('pv-meta'),
     qualityCard: $('quality-card'), chips: $('chips'), qualityHint: $('quality-hint'),
+    kind: $('kind'), vchips: $('vchips'), nameExt: $('name-ext'), trimNote: $('trim-note'),
     progressCard: $('progress-card'), pgLabel: $('pg-label'), pgPct: $('pg-pct'),
     pgBar: $('pg-bar'), pgTrack: document.querySelector('.pg-track'), pgSub: $('pg-sub'),
     doneCard: $('done-card'), doneTitle: $('done-title'), doneMeta: $('done-meta'),
@@ -34,7 +35,10 @@
     toast: $('toast'),
   };
 
-  const LS = { bitrate: 'ytmp3.bitrate', history: 'ytmp3.history', theme: 'ytmp3.theme' };
+  const LS = {
+    bitrate: 'ytmp3.bitrate', history: 'ytmp3.history', theme: 'ytmp3.theme',
+    kind: 'ytmp3.kind', height: 'ytmp3.height',
+  };
 
   // Deployed backend, used if the same-origin route is not answering. Keeping it
   // here means the app still works when only one of the two paths is healthy.
@@ -43,6 +47,8 @@
   const state = {
     server: '',
     bitrate: localStorage.getItem(LS.bitrate) || '192',
+    kind: localStorage.getItem(LS.kind) === 'video' ? 'video' : 'audio',
+    height: Number(localStorage.getItem(LS.height)) || 1080,   // the preferred one
     info: null,
     job: null,
     mode: null,     // 'jobs' = live progress from a server you run; 'sync' = one-shot (serverless)
@@ -172,9 +178,14 @@
   function currentSpec(url) {
     const { from, to, total } = state.span;
     const on = state.trimOn && total > 0;
+    const video = activeKind() === 'video';
+    const opt = video ? currentVideo() : null;
     return {
       url: url || firstUrl(el.url.value) || el.url.value.trim(),
       bitrate: state.bitrate,
+      kind: video ? 'video' : 'audio',
+      height: opt?.height || null,
+      label: qualityLabel(),
       name: el.name.value.trim(),
       start: on ? from : 0,
       end: on && to < total ? to : null,
@@ -182,6 +193,78 @@
       thumbnail: state.info?.thumbnail || '',
       duration: on ? to - from : total || null,
     };
+  }
+
+  /* ---------- audio or video ---------- */
+
+  /** What this video offers; an older server sends nothing, so audio only. */
+  const videoOptions = () => state.info?.video || [];
+
+  /** The kind in effect: video only when the loaded item actually has some. */
+  const activeKind = () => (state.kind === 'video' && videoOptions().length ? 'video' : 'audio');
+
+  /** The option closest to the preferred height without going over it. */
+  function currentVideo() {
+    const opts = videoOptions();
+    if (!opts.length) return null;
+    return opts.find((o) => o.height <= state.height) || opts[opts.length - 1];
+  }
+
+  function qualityLabel() {
+    if (activeKind() !== 'video') return `${state.bitrate} kbps`;
+    return currentVideo()?.label || 'וידאו';
+  }
+
+  function renderKind() {
+    const kind = activeKind();
+    const video = kind === 'video';
+    const opts = videoOptions();
+    const chosen = currentVideo();
+
+    el.kind.hidden = !opts.length;
+    for (const b of el.kind.children) {
+      const on = b.dataset.kind === kind;
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-checked', String(on));
+    }
+    el.chips.hidden = video;
+    el.vchips.hidden = !video;
+    el.trimNote.hidden = !video;
+    el.nameExt.textContent = `.${video ? chosen?.ext || 'mp4' : 'mp3'}`;
+    el.qualityHint.textContent = video
+      ? [ltr(chosen?.label), chosen?.size ? ltr(`~${fmtSize(chosen.size)}`) : ''].filter(Boolean).join(' · ')
+      : ltr(`${state.bitrate} kbps`);
+
+    if (!video) return;
+    // Rebuilt only when the list changes, so a tap does not re-create its own target.
+    const key = opts.map((o) => o.label).join(',');
+    if (el.vchips.dataset.key !== key) {
+      el.vchips.dataset.key = key;
+      const frag = document.createDocumentFragment();
+      for (const o of opts) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip';
+        chip.setAttribute('role', 'radio');
+        chip.dataset.h = String(o.height);
+        const main = document.createElement('span');
+        main.textContent = o.label;
+        chip.appendChild(main);
+        if (o.size) {
+          const sub = document.createElement('span');
+          sub.className = 'chip-sub';
+          sub.textContent = fmtSize(o.size);
+          chip.appendChild(sub);
+        }
+        frag.appendChild(chip);
+      }
+      el.vchips.replaceChildren(frag);
+    }
+    for (const c of el.vchips.children) {
+      const on = Number(c.dataset.h) === chosen?.height;
+      c.classList.toggle('is-on', on);
+      c.setAttribute('aria-checked', String(on));
+    }
   }
 
   /* ---------- theme ---------- */
@@ -229,6 +312,9 @@
     el.queueAdd.hidden = !(state.info && (p === 'ready' || p === 'done' || p === 'error'));
     el.resultsCard.hidden = state.results.length === 0;
     el.chips.classList.toggle('is-locked', p === 'working');
+    el.vchips.classList.toggle('is-locked', p === 'working');
+    el.kind.classList.toggle('is-locked', p === 'working');
+    renderKind();
     el.progressCard.hidden = p !== 'working';
     el.doneCard.hidden = p !== 'done';
     el.errorCard.hidden = p !== 'error';
@@ -243,7 +329,7 @@
     const label = {
       idle: 'הדביקו קישור',
       loading: 'טוען פרטים…',
-      ready: 'הורדה כ‑MP3',
+      ready: activeKind() === 'video' ? 'הורדת וידאו' : 'הורדה כ‑MP3',
       working: 'ממיר…',
       done: 'שמירת הקובץ',
       error: 'ניסיון נוסף',
@@ -251,7 +337,9 @@
 
     el.mainLabel.textContent = label;
     el.main.disabled = busy || (p === 'idle' && !isUrl(el.url.value.trim()));
-    if (p === 'idle' && isUrl(el.url.value.trim())) el.mainLabel.textContent = 'הורדה כ‑MP3';
+    if (p === 'idle' && isUrl(el.url.value.trim())) {
+      el.mainLabel.textContent = state.kind === 'video' ? 'הורדת וידאו' : 'הורדה כ‑MP3';
+    }
 
     // Three signals for one state, because waiting is the moment the app feels broken.
     el.topLoad.hidden = !busy;
@@ -261,7 +349,7 @@
 
   function showInfo(info) {
     state.info = info;
-    el.name.value = (info.title || 'audio').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 120);
+    el.name.value = (info.title || 'file').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 120);
     setupTrim(info.duration);
     clearResults();
     showPlayer(info);
@@ -590,7 +678,7 @@
       const meta = document.createElement('span');
       meta.textContent = item.status === 'error'
         ? item.error
-        : [ltr(`${item.bitrate} kbps`), item.blob ? ltr(fmtSize(item.blob.size)) : ''].filter(Boolean).join(' · ');
+        : [ltr(item.label || `${item.bitrate} kbps`), item.blob ? ltr(fmtSize(item.blob.size)) : ''].filter(Boolean).join(' · ');
       body.append(title, meta);
       row.appendChild(body);
 
@@ -618,7 +706,7 @@
     const href = URL.createObjectURL(item.blob);
     const a = document.createElement('a');
     a.href = href;
-    a.download = item.fileName || 'audio.mp3';
+    a.download = item.fileName || (item.kind === 'video' ? 'video.mp4' : 'audio.mp3');
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -653,13 +741,13 @@
         item.status = 'running';
         renderQueue();
         try {
-          const { blob, name } = await fetchMp3(item);
+          const { blob, name } = await fetchFile(item);
           item.blob = blob;
           item.fileName = name;
           item.status = 'done';
           pushHistory({
             url: item.url, title: item.name || item.title, thumbnail: item.thumbnail,
-            bitrate: item.bitrate, filesize: blob.size, at: Date.now(),
+            bitrate: item.bitrate, kind: item.kind, label: item.label, filesize: blob.size, at: Date.now(),
           });
           saveBlob(item);                  // browsers may refuse a burst; the row keeps a button
         } catch (err) {
@@ -682,7 +770,8 @@
   };
 
   function pushHistory(entry) {
-    const list = readHistory().filter((h) => h.url !== entry.url);
+    // The same video as audio and as video are two different files.
+    const list = readHistory().filter((h) => !(h.url === entry.url && (h.kind || 'audio') === (entry.kind || 'audio')));
     list.unshift(entry);
     localStorage.setItem(LS.history, JSON.stringify(list.slice(0, 12)));
   }
@@ -713,7 +802,7 @@
       const strong = document.createElement('strong');
       strong.textContent = item.title || item.url;
       const span = document.createElement('span');
-      span.textContent = [ltr(`${item.bitrate} kbps`), ltr(fmtSize(item.filesize))].filter(Boolean).join(' · ');
+      span.textContent = [ltr(item.label || `${item.bitrate} kbps`), ltr(fmtSize(item.filesize))].filter(Boolean).join(' · ');
       body.append(strong, span);
       btn.appendChild(body);
 
@@ -788,9 +877,13 @@
 
     let job;
     try {
+      const spec = currentSpec(url);
       job = await api('/api/jobs', {
         method: 'POST',
-        body: JSON.stringify({ url, bitrate: state.bitrate }),
+        body: JSON.stringify({
+          url, bitrate: spec.bitrate, kind: spec.kind, height: spec.height,
+          name: spec.name, start: spec.start, end: spec.end,
+        }),
       });
     } catch (err) {
       fail(err.message);
@@ -811,6 +904,10 @@
 
   function buildQuery(spec) {
     const q = new URLSearchParams({ url: spec.url, bitrate: spec.bitrate });
+    if (spec.kind === 'video') {
+      q.set('kind', 'video');
+      if (spec.height) q.set('height', String(spec.height));
+    }
     if (spec.name) q.set('name', spec.name);
     if (spec.start) q.set('start', String(Math.round(spec.start)));
     if (spec.end) q.set('end', String(Math.round(spec.end)));
@@ -818,11 +915,11 @@
   }
 
   /**
-   * Convert one video and return the finished audio.
+   * Convert one video and return the finished file (an mp3, or the video itself).
    * `onProgress(received, total)` is called while the file is transferred; the
    * conversion itself gives nothing to report until the server starts sending.
    */
-  async function fetchMp3(spec, onProgress) {
+  async function fetchFile(spec, onProgress) {
     // The direct endpoint avoids a hosting proxy's request cap; same origin is
     // the fallback if it cannot be reached.
     const bases = [state.direct, state.server].filter((v, i, a) => v && a.indexOf(v) === i);
@@ -853,7 +950,9 @@
       }
       if (!res) throw lastError || new Error('ההמרה נכשלה');
 
-      const name = filenameFrom(res.headers.get('Content-Disposition'), 'audio.mp3');
+      const video = spec.kind === 'video';
+      const name = filenameFrom(res.headers.get('Content-Disposition'), video ? 'video.mp4' : 'audio.mp3');
+      const type = res.headers.get('Content-Type') || (video ? 'video/mp4' : 'audio/mpeg');
       const total = Number(res.headers.get('Content-Length')) || 0;
 
       let blob;
@@ -868,7 +967,7 @@
           got += value.length;
           onProgress?.(got, total);
         }
-        blob = new Blob(chunks, { type: 'audio/mpeg' });
+        blob = new Blob(chunks, { type });
       } else {
         onProgress?.(0, 0);
         blob = await res.blob();
@@ -882,12 +981,17 @@
   async function syncDownload(url) {
     const spec = currentSpec(url);
 
-    el.pgLabel.textContent = 'מוריד וממיר';
-    el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)} · זה יכול לקחת עד דקה`;
+    if (spec.kind === 'video') {
+      el.pgLabel.textContent = 'מוריד את הווידאו';
+      el.pgSub.textContent = `${ltr(spec.label)} · בסרטון ארוך או באיכות גבוהה זה לוקח כמה דקות`;
+    } else {
+      el.pgLabel.textContent = 'מוריד וממיר';
+      el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)} · זה יכול לקחת עד דקה`;
+    }
     setProgress(0, true);
 
     try {
-      const { blob, name } = await fetchMp3(spec, (got, total) => {
+      const { blob, name } = await fetchFile(spec, (got, total) => {
         if (!total) return;
         el.pgLabel.textContent = 'מעביר את הקובץ';
         setProgress((got / total) * 100);
@@ -896,7 +1000,7 @@
 
       if (state.lastFile && state.lastFile.startsWith('blob:')) URL.revokeObjectURL(state.lastFile);
       finish(
-        { title: spec.name || state.info?.title, filesize: blob.size, duration: spec.duration },
+        { title: spec.name || state.info?.title, filesize: blob.size, duration: spec.duration, label: spec.label, kind: spec.kind },
         URL.createObjectURL(blob),
         name
       );
@@ -910,11 +1014,16 @@
       el.pgLabel.textContent = 'מוריד';
       setProgress(s.progress || 0, !s.progress);
       el.pgSub.textContent = [ltr(fmtSpeed(s.speed)), s.eta ? `נותרו ${ltr(fmtTime(s.eta))}` : '']
-        .filter(Boolean).join(' · ') || 'מוריד את פס הקול';
+        .filter(Boolean).join(' · ') || (s.kind === 'video' ? 'מוריד את הווידאו' : 'מוריד את פס הקול');
     } else if (s.status === 'converting') {
-      el.pgLabel.textContent = 'ממיר ל‑MP3';
       setProgress(100, true);
-      el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)}`;
+      if (s.kind === 'video') {
+        el.pgLabel.textContent = 'מאחד תמונה וקול';
+        el.pgSub.textContent = 'כמעט מוכן';
+      } else {
+        el.pgLabel.textContent = 'ממיר ל‑MP3';
+        el.pgSub.textContent = `מקודד ב‑${ltr(`${state.bitrate} kbps`)}`;
+      }
     } else if (s.status === 'queued') {
       el.pgLabel.textContent = 'בתור';
       setProgress(0, true);
@@ -959,7 +1068,9 @@
     state.lastName = fileName || s.filename || '';
 
     el.doneTitle.textContent = s.title || state.info?.title || 'הקובץ מוכן';
-    el.doneMeta.textContent = [ltr(`${state.bitrate} kbps`), ltr(fmtSize(s.filesize)), ltr(fmtTime(s.duration))]
+    const label = s.label || (s.kind === 'video' && s.height ? `${s.height}p` : qualityLabel());
+    const kind = s.kind || activeKind();
+    el.doneMeta.textContent = [ltr(label), ltr(fmtSize(s.filesize)), ltr(fmtTime(s.duration))]
       .filter(Boolean).join(' · ');
 
     pushHistory({
@@ -967,6 +1078,8 @@
       title: s.title || state.info?.title || '',
       thumbnail: s.thumbnail || state.info?.thumbnail || '',
       bitrate: state.bitrate,
+      kind,
+      label,
       filesize: s.filesize || 0,
       at: Date.now(),
     });
@@ -1059,14 +1172,31 @@
       c.classList.toggle('is-on', on);
       c.setAttribute('aria-checked', String(on));
     }
-    el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
     buzz();
 
     // The finished file is at the old bitrate, so offer the download again.
-    if (state.phase === 'done') {
-      state.phase = 'ready';
-      render();
-    }
+    if (state.phase === 'done') state.phase = 'ready';
+    render();
+  });
+
+  el.vchips.addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.height = Number(chip.dataset.h);
+    localStorage.setItem(LS.height, String(state.height));
+    buzz();
+    if (state.phase === 'done') state.phase = 'ready';
+    render();
+  });
+
+  el.kind.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn || btn.dataset.kind === activeKind()) return;
+    state.kind = btn.dataset.kind;
+    localStorage.setItem(LS.kind, state.kind);
+    buzz();
+    if (state.phase === 'done') state.phase = 'ready';
+    render();
   });
 
   el.main.addEventListener('click', () => {
@@ -1114,7 +1244,6 @@
       c.classList.toggle('is-on', on);
       c.setAttribute('aria-checked', String(on));
     }
-    el.qualityHint.textContent = ltr(`${state.bitrate} kbps`);
     el.build.textContent = ltr(`build ${BUILD}`);
 
     // Where the backend lives. Nothing here is configurable: the deployed app

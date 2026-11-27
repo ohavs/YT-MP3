@@ -6,11 +6,12 @@ Firebase Cloud Function (``main.py``). Endpoints:
     GET  /api/health           -> liveness + which mode the client should use
     POST /api/info             -> metadata for a URL
     GET  /api/diag             -> what each player client said, for a human
-    GET  /api/download         -> convert and return the mp3 in one request
+    GET  /api/download         -> convert and return the file in one request
+                                  (kind=audio: an mp3; kind=video&height=N: a video)
     POST /api/jobs             -> start a background job (progress mode)
     GET  /api/jobs/{id}        -> poll job status
     GET  /api/jobs/{id}/events -> job status as Server-Sent Events
-    GET  /api/jobs/{id}/file   -> download a finished job's mp3
+    GET  /api/jobs/{id}/file   -> download a finished job's file
 
 Serverless hosts throttle CPU between requests and spread traffic over
 instances, so they use the single-request ``/api/download`` path; a server you
@@ -52,6 +53,9 @@ SYNC_ONLY = os.getenv("SYNC_ONLY", "").lower() in ("1", "true", "yes")
 PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "").rstrip("/")
 WORK_DIR = Path(os.getenv("WORK_DIR") or tempfile.gettempdir()) / "ytmp3-jobs"
 ALLOWED_BITRATES = {"64", "96", "128", "192", "256", "320"}
+# A video is held on disk twice while it is muxed (the parts and the result),
+# and on a serverless host that disk is memory. 0 = no limit.
+MAX_VIDEO_MB = int(os.getenv("MAX_VIDEO_MB", "0"))
 
 # YouTube answers as several different "clients". Some of them are the ones a
 # bot check tends to interrogate; others (tv_simply, android_vr, ios) do not
@@ -171,6 +175,168 @@ def transcode(
     raise RuntimeError(f"ההמרה ל-MP3 נכשלה: {(last or '')[:200]}")
 
 
+def mux(
+    video: Path,
+    audio: Path | None,
+    dst: Path,
+    meta: dict[str, Any],
+    start: float = 0.0,
+    end: float | None = None,
+) -> None:
+    """Join a video stream and an audio stream into `dst` without re-encoding.
+
+    Re-encoding 4K on a single serverless CPU would take longer than the
+    request is allowed to live, so streams are copied as they are. The price
+    is that a cut starts on the nearest keyframe at or before `start`, which
+    is usually within a couple of seconds.
+    """
+    exe = ffmpeg_exe()
+    if not exe:
+        raise RuntimeError("ffmpeg לא זמין בשרת")
+
+    def seek() -> list[str]:
+        return ["-ss", f"{start:.2f}"] if start > 0 else []
+
+    cmd = [exe, "-y", "-hide_banner", "-loglevel", "error"]
+    cmd += seek() + ["-i", str(video)]
+    if audio is not None:
+        cmd += seek() + ["-i", str(audio)]
+    if end is not None and end > start:
+        cmd += ["-t", f"{end - start:.2f}"]
+    cmd += ["-map", "0:v:0"]
+    cmd += ["-map", "1:a:0"] if audio is not None else ["-map", "0:a:0?"]
+    cmd += ["-c", "copy"]
+    if dst.suffix.lower() == ".mp4":
+        # the index up front lets a phone start playing before it has it all
+        cmd += ["-movflags", "+faststart"]
+    for key, value in meta.items():
+        if value:
+            cmd += ["-metadata", f"{key}={value}"]
+    cmd.append(str(dst))
+
+    done = subprocess.run(cmd, capture_output=True, text=True)
+    if done.returncode == 0 and dst.is_file() and dst.stat().st_size:
+        return
+    dst.unlink(missing_ok=True)
+    raise RuntimeError(f"איחוד הווידאו נכשל: {(done.stderr or '').strip()[:200]}")
+
+
+# --- video formats ----------------------------------------------------------
+#
+# Every YouTube quality above 360p comes as two separate streams, a silent
+# video and a separate audio track, which have to be fetched apart and joined.
+# The formats are picked here rather than with a yt-dlp selector string, so
+# the choice (and the container it implies) is explicit and testable.
+
+# Higher is preferred at equal height and frame rate. H.264 plays on every
+# phone; VP9 nearly everywhere; AV1 needs recent hardware to decode smoothly.
+CODEC_RANK = {"avc1": 3, "vp09": 2, "vp9": 2, "av01": 1}
+
+
+def codec_of(fmt: dict[str, Any]) -> str:
+    return (fmt.get("vcodec") or "none").split(".")[0].lower()
+
+
+def has_video(fmt: dict[str, Any]) -> bool:
+    return codec_of(fmt) != "none" and bool(fmt.get("height")) and fmt.get("ext") != "mhtml"
+
+
+def has_audio(fmt: dict[str, Any]) -> bool:
+    return (fmt.get("acodec") or "none") != "none"
+
+
+def approx_size(fmt: dict[str, Any] | None, duration: float | None) -> int:
+    if not fmt:
+        return 0
+    size = fmt.get("filesize") or fmt.get("filesize_approx")
+    if not size and fmt.get("tbr") and duration:
+        size = fmt["tbr"] * 125 * duration  # tbr is kbit/s
+    return int(size or 0)
+
+
+def video_rank(fmt: dict[str, Any]) -> tuple:
+    return (
+        int(fmt.get("fps") or 0),
+        CODEC_RANK.get(codec_of(fmt), 0),
+        # a plain https stream downloads faster and more reliably than a playlist
+        0 if "m3u8" in (fmt.get("protocol") or "") else 1,
+        fmt.get("tbr") or 0,
+    )
+
+
+def pick_audio(info: dict[str, Any], prefer_ext: str | None) -> dict[str, Any] | None:
+    """The best audio-only stream, preferring one that fits the video's container."""
+    audios = [f for f in info.get("formats") or [] if has_audio(f) and codec_of(f) == "none"]
+    if not audios:
+        return None
+
+    def rank(fmt: dict[str, Any]) -> tuple:
+        fits = (fmt.get("ext") == "m4a") if prefer_ext == "mp4" else (fmt.get("ext") == prefer_ext)
+        return (
+            1 if fits else 0,
+            # dubbed tracks are not what the video's own page plays by default
+            0 if "dub" in (fmt.get("format_note") or "").lower() else 1,
+            fmt.get("abr") or fmt.get("tbr") or 0,
+        )
+
+    return max(audios, key=rank)
+
+
+def pick_video(info: dict[str, Any], height: int | None) -> dict[str, Any] | None:
+    """The stream for a requested height: that height, else the nearest one below."""
+    videos = [f for f in info.get("formats") or [] if has_video(f)]
+    if not videos:
+        return None
+    if height:
+        fitting = [f for f in videos if f["height"] <= height]
+        videos = fitting or [min(videos, key=lambda f: f["height"])]
+    top = max(f["height"] for f in videos)
+    return max((f for f in videos if f["height"] == top), key=video_rank)
+
+
+def container_for(video: dict[str, Any], audio: dict[str, Any] | None) -> str:
+    """The output extension that can carry both streams untouched."""
+    vext = video.get("ext")
+    if audio is None:
+        return vext if vext in ("mp4", "webm") else "mkv"
+    aext = audio.get("ext")
+    if vext == "mp4" and aext in ("m4a", "mp4"):
+        return "mp4"
+    if vext == "webm" and aext == "webm":
+        return "webm"
+    return "mkv"
+
+
+def video_plan(info: dict[str, Any], height: int | None) -> tuple[dict, dict | None, str]:
+    """What to fetch for `height`: (video format, separate audio or None, extension)."""
+    video = pick_video(info, height)
+    if not video:
+        raise ApiError(422, "לא נמצא וידאו להורדה בקישור הזה")
+    audio = None if has_audio(video) else pick_audio(info, video.get("ext"))
+    return video, audio, container_for(video, audio)
+
+
+def video_options(info: dict[str, Any]) -> list[dict[str, Any]]:
+    """One entry per available height, best first, with what a choice would cost."""
+    duration = info.get("duration")
+    heights = sorted({f["height"] for f in info.get("formats") or [] if has_video(f)}, reverse=True)
+    options = []
+    for height in heights:
+        video, audio, ext = video_plan(info, height)
+        fps = int(video.get("fps") or 0)
+        options.append(
+            {
+                "height": height,
+                "fps": fps or None,
+                "label": f"{height}p{fps if fps > 30 else ''}",
+                "codec": codec_of(video),
+                "ext": ext,
+                "size": (approx_size(video, duration) + approx_size(audio, duration)) or None,
+            }
+        )
+    return options
+
+
 # --- job bookkeeping --------------------------------------------------------
 
 
@@ -179,6 +345,8 @@ class Job:
     id: str
     url: str
     bitrate: str
+    kind: str = "audio"  # audio | video
+    height: int | None = None  # video only; None = the best there is
     status: str = "queued"  # queued | downloading | converting | done | error
     progress: float = 0.0
     speed: float | None = None
@@ -197,6 +365,8 @@ class Job:
     def public(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "kind": self.kind,
+            "height": self.height,
             "status": self.status,
             "progress": round(self.progress, 2),
             "speed": self.speed,
@@ -276,11 +446,32 @@ def read_span(get) -> tuple[float, float | None]:
     return start, end
 
 
-def safe_name(title: str) -> str:
+def safe_name(title: str, ext: str = "mp3") -> str:
     """A filename that survives Content-Disposition and every common filesystem."""
     name = unicodedata.normalize("NFC", title or "audio")
     name = UNSAFE_RE.sub("", name).strip(" .") or "audio"
-    return name[:120] + ".mp3"
+    return f"{name[:120]}.{ext}"
+
+
+def check_kind(kind: str | None) -> str:
+    return "video" if (kind or "").lower() == "video" else "audio"
+
+
+def check_height(raw: Any) -> int | None:
+    """A requested video height, or None for "the best available"."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 < value <= 8640 else None
+
+
+MIME = {
+    "mp3": "audio/mpeg",
+    "mp4": "video/mp4",
+    "webm": "video/webm",
+    "mkv": "video/x-matroska",
+}
 
 
 def cookie_file() -> str | None:
@@ -564,6 +755,100 @@ def convert(job: Job, out_dir: Path) -> Path:
     return target
 
 
+def convert_video(job: Job, out_dir: Path) -> Path:
+    """Fetch the video at the requested height, join it with its audio, return it."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    info = single_entry(extract_info(job.url, base_opts(), download=False))
+    job.title = info.get("title") or "video"
+    job.duration = int(info.get("duration") or 0) or None
+    job.thumbnail = pick_thumbnail(info)
+
+    if job.duration and job.start >= job.duration:
+        raise ApiError(400, "נקודת ההתחלה מאוחרת מסוף הסרטון")
+
+    video, audio, ext = video_plan(info, job.height)
+    parts = [video] + ([audio] if audio else [])
+
+    expected = sum(approx_size(f, job.duration) for f in parts)
+    if MAX_VIDEO_MB and expected > MAX_VIDEO_MB * 1024 * 1024:
+        raise ApiError(
+            413,
+            f"הקובץ באיכות הזו גדול מדי לשרת (כ-{expected // 1048576} MB, עד {MAX_VIDEO_MB} MB). "
+            "בחרו איכות נמוכה יותר או חיתוך קצר יותר",
+        )
+
+    # Progress spans both downloads, weighted by how much each one carries.
+    weights = [approx_size(f, job.duration) or 1 for f in parts]
+    finished = [0.0] * len(parts)
+    current = {"i": 0}
+
+    def hook(d: dict[str, Any]) -> None:
+        i = current["i"]
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            done = d.get("downloaded_bytes") or 0
+            finished[i] = min(1.0, done / total) if total else 0.0
+            job.status = "downloading"
+            job.progress = min(99.0, sum(w * f for w, f in zip(weights, finished)) / sum(weights) * 100)
+            job.speed = d.get("speed")
+            job.eta = d.get("eta")
+        elif d.get("status") == "finished":
+            finished[i] = 1.0
+
+    files: list[Path] = []
+    for i, fmt in enumerate(parts):
+        current["i"] = i
+        stem = "video" if i == 0 else "audio"
+        opts = base_opts()
+        opts.update(
+            {
+                "format": fmt["format_id"],
+                "outtmpl": str(out_dir / f"{stem}.%(ext)s"),
+                "progress_hooks": [hook],
+                "postprocessors": [],
+            }
+        )
+        # The stream addresses already resolved belong to whichever player
+        # client answered; reusing them skips a second, slower extraction.
+        with YoutubeDL(opts) as ydl:
+            ydl.process_ie_result(YoutubeDL.sanitize_info(dict(info), True), download=True)
+        found = [p for p in out_dir.glob(f"{stem}.*") if not p.name.endswith((".part", ".ytdl"))]
+        if not found:
+            raise RuntimeError("הורדת הווידאו נכשלה")
+        files.append(found[0])
+
+    job.status = "converting"
+    job.progress = 100.0
+    job.speed = None
+    job.eta = None
+
+    target = out_dir / safe_name(job.name or job.title, ext)
+    mux(
+        files[0],
+        files[1] if len(files) > 1 else None,
+        target,
+        {
+            "title": job.name or info.get("title"),
+            "artist": info.get("uploader") or info.get("channel"),
+            "comment": info.get("webpage_url"),
+        },
+        job.start,
+        job.end,
+    )
+    for part in files:
+        part.unlink(missing_ok=True)
+
+    job.filename = target.name
+    job.filesize = target.stat().st_size
+    job.status = "done"
+    return target
+
+
+def produce(job: Job, out_dir: Path) -> Path:
+    return (convert_video if job.kind == "video" else convert)(job, out_dir)
+
+
 # --- routes -----------------------------------------------------------------
 
 
@@ -579,6 +864,8 @@ def health():
             "clients": PLAYER_CLIENTS,
             "direct_url": PUBLIC_API_URL or None,
             "bitrates": sorted(ALLOWED_BITRATES, key=int),
+            "video": True,
+            "max_video_mb": MAX_VIDEO_MB or None,
         }
     )
 
@@ -617,6 +904,7 @@ def info():
             "thumbnail": pick_thumbnail(data),
             "webpage_url": data.get("webpage_url") or url,
             "is_live": bool(data.get("is_live")),
+            "video": video_options(data),
         }
     )
 
@@ -705,6 +993,8 @@ def download():
         id=uuid.uuid4().hex[:12],
         url=check_url(request.args.get("url", "")),
         bitrate=check_bitrate(request.args.get("bitrate", "192")),
+        kind=check_kind(request.args.get("kind")),
+        height=check_height(request.args.get("height")),
         start=start,
         end=end,
         name=(request.args.get("name") or "").strip() or None,
@@ -712,7 +1002,7 @@ def download():
     out_dir = WORK_DIR / job.id
 
     try:
-        target = convert(job, out_dir)
+        target = produce(job, out_dir)
     except ApiError:
         shutil.rmtree(out_dir, ignore_errors=True)
         raise
@@ -726,6 +1016,10 @@ def download():
     return deliver_and_discard(target, out_dir)
 
 
+def mime_of(path: Path) -> str:
+    return MIME.get(path.suffix.lower().lstrip("."), "application/octet-stream")
+
+
 def deliver_and_discard(target: Path, out_dir: Path) -> Response:
     """Send the file, then remove it — on a serverless host /tmp is memory.
 
@@ -733,7 +1027,7 @@ def deliver_and_discard(target: Path, out_dir: Path) -> Response:
     is never invoked for a send_file response, and the finally clause covers a
     client that hangs up part way through.
     """
-    response = send_file(target, mimetype="audio/mpeg", as_attachment=True, download_name=target.name)
+    response = send_file(target, mimetype=mime_of(target), as_attachment=True, download_name=target.name)
     body = response.response
 
     def stream():
@@ -748,7 +1042,7 @@ def deliver_and_discard(target: Path, out_dir: Path) -> Response:
 
 def run_job(job: Job) -> None:
     try:
-        convert(job, WORK_DIR / job.id)
+        produce(job, WORK_DIR / job.id)
     except Exception as exc:  # noqa: BLE001 - reported back through the API
         job.error = friendly_error(exc)
         job.status = "error"
@@ -767,7 +1061,9 @@ def create_job():
     job = Job(
         id=uuid.uuid4().hex[:12],
         url=url,
-        bitrate=check_bitrate(payload.get("bitrate", "192")),
+        bitrate=check_bitrate(str(payload.get("bitrate", "192"))),
+        kind=check_kind(payload.get("kind")),
+        height=check_height(payload.get("height")),
         start=start,
         end=end,
         name=(payload.get("name") or "").strip() or None,
@@ -820,4 +1116,4 @@ def job_file(job_id: str):
     path = WORK_DIR / job.id / job.filename
     if not path.is_file():
         raise ApiError(410, "הקובץ נמחק מהשרת")
-    return send_file(path, mimetype="audio/mpeg", as_attachment=True, download_name=job.filename)
+    return send_file(path, mimetype=mime_of(path), as_attachment=True, download_name=job.filename)

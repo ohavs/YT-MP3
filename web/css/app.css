@@ -306,6 +306,53 @@ p { margin: 0; }
   transition: transform .12s var(--ease), color .15s, border-color .15s, background .15s;
 }
 .chip:active { transform: scale(.95); }
+
+/* MP3 / video */
+.seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1.5px solid var(--line);
+}
+.seg-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  border: 0;
+  border-radius: calc(var(--r-sm) - 4px);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 650;
+  font-size: 15px;
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.seg-btn.is-on {
+  background: color-mix(in srgb, var(--text) 13%, var(--surface-2));
+  color: var(--text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / .18);
+}
+.seg.is-locked, .vchips.is-locked { opacity: .5; pointer-events: none; }
+
+.vchips .chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-height: 52px;
+  padding: 4px 2px;
+  direction: ltr;
+}
+.chip .chip-sub { font-size: 11px; font-weight: 500; opacity: .8; }
+.trim-note { margin: 10px 0 0; }
 .chip.is-on {
   color: var(--accent-ink);
   border-color: transparent;
