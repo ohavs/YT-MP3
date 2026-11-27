@@ -1,4 +1,6 @@
 firebase-functions>=0.4.2
 flask>=3.0
-yt-dlp>=2024.12.13
+yt-dlp>=2026.11.23
+yt-dlp-ejs>=0.8.0
+deno>=2.5
 imageio-ffmpeg>=0.5

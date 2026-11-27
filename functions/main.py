@@ -67,6 +67,11 @@ def api(request: https_fn.Request) -> https_fn.Response:
 SELFTEST_URL = os.getenv("SELFTEST_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
 
+LAB_URLS = [u for u in os.getenv("LAB_URLS", "https://www.youtube.com/watch?v=pyMQ3OOrov4").split(",") if u]
+LAB_CLIENTS = ["default", "web", "mweb", "web_safari", "web_embedded", "tv", "tv_simply", "tv_embedded",
+               "android_vr", "ios", "web_creator", "android"]
+
+
 @scheduler_fn.on_schedule(
     schedule="*/10 * * * *",
     region="us-central1",
@@ -75,19 +80,26 @@ SELFTEST_URL = os.getenv("SELFTEST_URL", "https://www.youtube.com/watch?v=dQw4w9
 )
 def selftest(event: scheduler_fn.ScheduledEvent) -> None:
     import json
+    import time
 
-    from bridge import INFO_DEADLINE, base_opts, extract_info, ffmpeg_exe, single_entry
+    from yt_dlp import YoutubeDL
 
-    report: list[dict] = []
-    title = None
-    error = None
-    try:
-        title = single_entry(extract_info(SELFTEST_URL, base_opts(), False, INFO_DEADLINE, report)).get("title")
-    except Exception as exc:  # noqa: BLE001 - the failure is what we came to record
-        error = str(exc)[:600]
+    from bridge import base_opts, js_runtime
 
-    print("SELFTEST " + json.dumps(
-        {"ok": title is not None, "title": title, "error": error,
-         "ffmpeg": bool(ffmpeg_exe()), "attempts": report},
-        ensure_ascii=False,
-    ))
+    print("LAB runtime " + json.dumps({"deno": js_runtime()}))
+    for url in [SELFTEST_URL] + LAB_URLS:
+        for client in LAB_CLIENTS:
+            opts = base_opts()
+            opts["socket_timeout"] = 15
+            if client != "default":
+                opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+            t0 = time.monotonic()
+            try:
+                with YoutubeDL(opts) as ydl:
+                    data = ydl.extract_info(url, download=False)
+                heights = sorted({f.get("height") for f in data.get("formats") or [] if f.get("height")})
+                result = {"ok": True, "formats": len(data.get("formats") or []), "heights": heights}
+            except Exception as exc:  # noqa: BLE001 - the failure is what we came to record
+                result = {"ok": False, "error": str(exc)[:160]}
+            result.update({"url": url[-11:], "client": client, "s": round(time.monotonic() - t0, 1)})
+            print("LAB " + json.dumps(result, ensure_ascii=False))

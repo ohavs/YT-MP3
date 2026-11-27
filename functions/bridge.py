@@ -532,6 +532,24 @@ class YdlLogger:
 YDL_LOGGER = YdlLogger()
 
 
+def js_runtime() -> str | None:
+    """The deno binary yt-dlp needs to solve YouTube's JavaScript challenges.
+
+    It ships as a pip wheel, so it lands inside the function's environment
+    without a system install; without it yt-dlp falls back to a degraded
+    path that loses formats and trips bot checks more often.
+    """
+    found = shutil.which("deno")
+    if found:
+        return found
+    try:
+        import deno
+
+        return deno.find_deno_bin()
+    except Exception:  # noqa: BLE001 - absence is a normal, reportable state
+        return None
+
+
 def base_opts() -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
@@ -545,6 +563,9 @@ def base_opts() -> dict[str, Any]:
         "cachedir": False,   # the filesystem is read-only except /tmp
         "logger": YDL_LOGGER,   # never touch sys.stderr; see YdlLogger
     }
+    runtime = js_runtime()
+    if runtime:
+        opts["js_runtimes"] = {"deno": {"path": runtime}}
     cookies = cookie_file()
     if cookies:
         opts["cookiefile"] = cookies
