@@ -91,3 +91,49 @@ def selftest(event: scheduler_fn.ScheduledEvent) -> None:
          "ffmpeg": bool(ffmpeg_exe()), "attempts": report},
         ensure_ascii=False,
     ))
+
+
+# --- temporary: which region's addresses does YouTube still answer? ---------
+
+LAB_URL = "https://www.youtube.com/watch?v=pyMQ3OOrov4"
+LAB_CLIENTS = ["default", "tv_embedded", "web_safari", "web_embedded", "mweb", "tv_simply", "android_vr"]
+
+
+def _lab(region: str) -> None:
+    import json
+    import time
+
+    from yt_dlp import YoutubeDL
+
+    from bridge import base_opts
+
+    for client in LAB_CLIENTS:
+        opts = base_opts()
+        if client != "default":
+            opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+        t0 = time.monotonic()
+        try:
+            with YoutubeDL(opts) as ydl:
+                data = ydl.extract_info(LAB_URL, download=False)
+            heights = sorted({f.get("height") for f in data.get("formats") or [] if f.get("height")})
+            result = {"ok": True, "top": heights[-1] if heights else None}
+        except Exception as exc:  # noqa: BLE001
+            result = {"ok": False, "error": str(exc)[25:90]}
+        result.update({"region": region, "client": client, "s": round(time.monotonic() - t0, 1)})
+        print("REGIONLAB " + json.dumps(result))
+
+
+def _make_lab(region: str):
+    @scheduler_fn.on_schedule(schedule="0 0 1 1 *", region=region, memory=options.MemoryOption.GB_1, timeout_sec=300)
+    def lab(event: scheduler_fn.ScheduledEvent) -> None:
+        _lab(region)
+
+    return lab
+
+
+lab_euw1 = _make_lab("europe-west1")
+lab_mew1 = _make_lab("me-west1")
+lab_asne1 = _make_lab("asia-northeast1")
+lab_use1 = _make_lab("us-east1")
+lab_sae1 = _make_lab("southamerica-east1")
+lab_ause1 = _make_lab("australia-southeast1")
